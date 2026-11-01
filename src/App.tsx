@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+﻿import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import {
   createDefaultPlayers,
   deleteGame,
@@ -38,6 +38,15 @@ const visibleQuarters = (game: Game): number[] => {
 function App() {
   const [page, setPage] = useState<Page>('teams')
   const [teams, setTeams] = useState<Team[]>([])
+  // お気に入りは端末内に保存（既存のチーム・試合データ形式は変更しない）
+  const [favoriteTeamIds, setFavoriteTeamIds] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('team-link-favorite-team-ids') ?? '[]')
+      return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []
+    } catch {
+      return []
+    }
+  })
   const [games, setGames] = useState<Game[]>([])
   const [trash, setTrash] = useState<TrashItem[]>([])
   const [restoreSnapshots, setRestoreSnapshots] = useState<RestoreSnapshot[]>([])
@@ -69,16 +78,33 @@ function App() {
   const [freeThrowResults, setFreeThrowResults] = useState<Array<boolean | null>>([null, null])
   const [timeoutLimit, setTimeoutLimit] = useState<number>(() => { const value = Number(localStorage.getItem('team-link-timeout-limit') ?? '1'); return [1, 2, 3].includes(value) ? value : 1 })
 
+  function toggleFavoriteTeam(teamId: string) {
+    setFavoriteTeamIds(current => {
+      const next = current.includes(teamId) ? current.filter(id => id !== teamId) : [...current, teamId]
+      try { localStorage.setItem('team-link-favorite-team-ids', JSON.stringify(next)) } catch (error) { console.error('お気に入りの保存に失敗しました', error) }
+      return next
+    })
+  }
+
   async function refreshData() {
     const sequence = ++refreshSequence.current
     const [savedTeams, savedGames] = await Promise.all([getTeams(), getGames()])
     if (sequence !== refreshSequence.current) return
     setTeams(savedTeams)
     setGames(
-      savedGames.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      ),
+      savedGames.sort((a, b) => {
+        const dateOf = (game: Game) => (game as DatedGame).gameDate || game.createdAt.slice(0, 10)
+        const dateComparison = dateOf(b).localeCompare(dateOf(a))
+        if (dateComparison !== 0) return dateComparison
+        const statusOrder: Record<Game['status'], number> = {
+          scheduled: 0,
+          'in-progress': 1,
+          completed: 2,
+        }
+        const statusComparison = statusOrder[a.status] - statusOrder[b.status]
+        if (statusComparison !== 0) return statusComparison
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      }),
     )
   }
 
@@ -254,6 +280,12 @@ function App() {
       setMessage('試合を削除できませんでした。')
     }
   }
+
+  // お気に入りのチームを試合作成の選択肢の先頭に表示する
+  const favoriteTeamIdSet = new Set(favoriteTeamIds)
+  const teamsForSelection = [...teams].sort((a, b) =>
+    Number(favoriteTeamIdSet.has(b.id)) - Number(favoriteTeamIdSet.has(a.id)),
+  )
 
   function teamLabel(teamId: string) {
     return teams.find((team) => team.id === teamId)?.name ?? '削除されたチーム'
@@ -719,7 +751,7 @@ function App() {
               onClick={() => { setPage('backup'); setMessage(''); void loadRecoveryData() }}
               className={`rounded-xl px-2 py-3 text-sm font-bold sm:px-4 sm:text-base ${page === 'backup' ? 'bg-blue-700 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}
             >
-              バックアップ管理
+              設定
             </button>
           </nav>
         )}
@@ -819,7 +851,19 @@ function App() {
                     <article key={team.id} className="overflow-hidden rounded-2xl bg-white shadow-sm">
                       <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <h3 className="text-xl font-bold">{team.name}</h3>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => toggleFavoriteTeam(team.id)}
+                              aria-label={`${team.name}をお気に入り${favoriteTeamIdSet.has(team.id) ? 'から解除' : 'に登録'}`}
+                              aria-pressed={favoriteTeamIdSet.has(team.id)}
+                              title={favoriteTeamIdSet.has(team.id) ? 'お気に入り解除' : 'お気に入り登録'}
+                              className={`shrink-0 rounded-lg p-1 text-2xl leading-none transition-colors ${favoriteTeamIdSet.has(team.id) ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'}`}
+                            >
+                              {favoriteTeamIdSet.has(team.id) ? '★' : '☆'}
+                            </button>
+                            <h3 className="text-xl font-bold">{team.name}</h3>
+                          </div>
                           <p className="mt-1 text-sm text-slate-500">選手 {team.players.length} 名分</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -907,14 +951,14 @@ function App() {
                       <span className="mb-2 block font-semibold">ホームチーム</span>
                       <select value={homeTeamId} onChange={(event) => setHomeTeamId(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
                         <option value="">チームを選択</option>
-                        {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                        {teamsForSelection.map((team) => <option key={team.id} value={team.id}>{favoriteTeamIdSet.has(team.id) ? '★ ' : ''}{team.name}</option>)}
                       </select>
                     </label>
                     <label className="block">
                       <span className="mb-2 block font-semibold">アウェイチーム</span>
                       <select value={awayTeamId} onChange={(event) => setAwayTeamId(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3">
                         <option value="">チームを選択</option>
-                        {teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                        {teamsForSelection.map((team) => <option key={team.id} value={team.id}>{favoriteTeamIdSet.has(team.id) ? '★ ' : ''}{team.name}</option>)}
                       </select>
                     </label>
                   </div>
@@ -946,38 +990,37 @@ function App() {
               {games.length === 0 ? (
                 <p className="rounded-xl bg-white p-6 text-slate-500">まだ試合がありません。上のフォームから作成してください。</p>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-2">
                   {games.map((game) => (
-                    <article key={game.id} className="rounded-2xl bg-white p-5 shadow-sm">
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <article key={game.id} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 flex-1">
                           <h3 className="text-lg font-bold">{game.name}</h3>
-                          <p className="mt-2 text-slate-700">
+                          <p className="mt-1 text-sm text-slate-700">
                             {teamLabel(game.homeTeamId)} <span className="px-2 font-bold text-slate-400">VS</span> {teamLabel(game.awayTeamId)}
                           </p>
-                          <p className="mt-1 text-sm text-slate-500">
-                            ホーム：{game.homeUniform === 'white' ? '白' : '濃色'} ／ アウェイ：{game.awayUniform === 'white' ? '白' : '濃色'}
-                          </p>
-                          <p className="mt-1 text-sm text-slate-500">試合日：{new Date(game.createdAt).toLocaleDateString('ja-JP')}</p>
+                          <p className="mt-1 text-sm text-slate-500">試合日：{(game as DatedGame).gameDate ? (game as DatedGame).gameDate!.replace(/-/g, '/') : new Date(game.createdAt).toLocaleDateString('ja-JP')}</p>
                           {game.status === 'completed' && (
-                            <p className="mt-3 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-bold text-slate-700">試合終了 · 最終スコア：{game.events.filter(e => !e.cancelled && e.teamId === game.homeTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)} - {game.events.filter(e => !e.cancelled && e.teamId === game.awayTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)}</p>
+                            <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1.5 text-base font-bold text-slate-700">試合終了 · 最終スコア：{game.events.filter(e => !e.cancelled && e.teamId === game.homeTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)} - {game.events.filter(e => !e.cancelled && e.teamId === game.awayTeamId && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? (e.type === 'freeThrow' ? 1 : 0)), 0)}</p>
                           )}
                         </div>
-                        <div className="flex flex-col gap-2 sm:w-44">
-                          <button type="button" onClick={() => openGame(game)} className="rounded-lg bg-blue-700 px-3 py-3 text-sm font-bold text-white">
+                        <div className="flex w-full flex-col gap-2 sm:w-64 sm:shrink-0">
+                          <button type="button" onClick={() => openGame(game)} className="rounded-lg bg-blue-700 px-3 py-2.5 text-sm font-bold text-white">
                             試合を開く・先発設定
                           </button>
-                          <label className="text-sm font-semibold">
-                            試合状況
-                            <select value={game.status} onChange={(event) => void handleGameStatusChange(game, event.target.value as Game['status'])} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
-                              <option value="scheduled">試合前</option>
-                              <option value="in-progress">試合中</option>
-                              <option value="completed">試合終了</option>
-                            </select>
-                          </label>
-                          <button type="button" onClick={() => void handleDeleteGame(game)} className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700">
-                            試合を削除
-                          </button>
+                          <div className="grid grid-cols-2 items-end gap-2">
+                            <label className="min-w-0 text-xs font-semibold">
+                              試合状況
+                              <select aria-label="試合状況" value={game.status} onChange={(event) => void handleGameStatusChange(game, event.target.value as Game['status'])} className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm">
+                                <option value="scheduled">試合前</option>
+                                <option value="in-progress">試合中</option>
+                                <option value="completed">試合終了</option>
+                              </select>
+                            </label>
+                            <button type="button" onClick={() => void handleDeleteGame(game)} className="rounded-lg border border-red-200 px-2 py-2 text-sm font-semibold text-red-700">
+                              試合を削除
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </article>
@@ -1072,7 +1115,6 @@ function App() {
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-xs font-bold text-blue-700">試合記録</p>
                     <h2 className="text-lg font-bold">{selectedGame.name}</h2>
                 <p className="mt-1 inline-flex rounded-md bg-blue-700 px-2 py-1 text-sm font-black text-white">{quarterLabel(lineupSetupQuarter)}</p>
                     <p className="mt-0.5 text-sm text-slate-600">{homeTeam.name} vs {awayTeam.name}</p>
