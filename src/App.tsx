@@ -19,7 +19,7 @@ import {
   type Team,
 } from './lib/database'
 
-type Page = 'teams' | 'games' | 'backup' | 'game-detail' | 'game-record'
+type Page = 'teams' | 'games' | 'stats' | 'backup' | 'game-detail' | 'game-record'
 type DatedGame = Game & { gameDate?: string }
 const todayLocal = () => {
   const date = new Date()
@@ -48,6 +48,30 @@ function App() {
     }
   })
   const [games, setGames] = useState<Game[]>([])
+  const [statsGameIndex, setStatsGameIndex] = useState(-1)
+  const [statsFullscreen, setStatsFullscreen] = useState(false)
+  const statsSheetContainerRef = useRef<HTMLDivElement>(null)
+  const [statsSheetWidth, setStatsSheetWidth] = useState(1000)
+  useEffect(() => {
+    const element = statsSheetContainerRef.current
+    if (page !== 'stats' || !element) return
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width && width > 0) setStatsSheetWidth(width)
+    })
+    observer.observe(element)
+    setStatsSheetWidth(element.clientWidth)
+    return () => observer.disconnect()
+  }, [page])
+  const statsSheetScale = Math.min(1.6, statsSheetWidth / 1000)
+  useEffect(() => {
+    if (!statsFullscreen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setStatsFullscreen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [statsFullscreen])
   const [trash, setTrash] = useState<TrashItem[]>([])
   const [restoreSnapshots, setRestoreSnapshots] = useState<RestoreSnapshot[]>([])
   const refreshSequence = useRef(0)
@@ -691,6 +715,220 @@ function App() {
     }
   }
 
+  function renderBoxScore(game: Game, homeTeam: Team, awayTeam: Team) {
+    return (
+                <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+                  <div className="mb-1">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold">ボックススコア</h3>
+                        <p className="text-xs text-slate-500">記録に応じて自動更新</p>
+                      </div>
+                    </div>
+                  </div>
+                  {[{ team: homeTeam, lineup: game.homeLineup ?? [] }, { team: awayTeam, lineup: game.awayLineup ?? [] }].map(({ team }) => (
+                    <div key={team.id} className="mb-2 last:mb-0">
+                      <h4 className="mb-1 text-sm font-bold">{team.name}</h4>
+                      <div className="w-full overflow-hidden">
+                        <table className="w-full table-fixed border-collapse text-[clamp(7px,0.8vw,13px)]"><colgroup><col style={{width:'16%'}} />{Array.from({length:14}, (_, i) => <col key={i} style={{width:'6%'}} />)}</colgroup>
+                          <thead>
+                            <tr className="bg-slate-100 text-left">
+                              {['選手', '得点', 'FG', 'FG%', '3FG', '3FG%', 'FT', 'FT%', 'OREB', 'DREB', 'STL', 'BLK', 'AST', 'TO', 'PF'].map(label => <th key={label} className="break-words border-b border-slate-200 px-0.5 py-1 font-semibold">{label}</th>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {team.players.filter(player => {
+                              const initialLineup = team.id === game.homeTeamId ? (game.homeLineup ?? []) : (game.awayLineup ?? [])
+                              const hasPlayedEvent = game.events.some(event => !event.cancelled && event.teamId === team.id && (event.playerId === player.id || event.relatedPlayerId === player.id))
+                              return initialLineup.includes(player.id) || hasPlayedEvent
+                            }).map(player => {
+                              const playerEvents = game.events.filter(event => !event.cancelled && event.teamId === team.id && event.playerId === player.id)
+                              const count = (type: string) => playerEvents.filter(event => event.type === type).length
+                              const points = playerEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+                              const shots = playerEvents.filter(event => event.type === 'shot')
+                              const madeShots = shots.filter(event => event.made).length
+                              const threes = shots.filter(event => event.points === 3)
+                              const madeThrees = threes.filter(event => event.made).length
+                              const freeThrows = playerEvents.filter(event => event.type === 'freeThrow')
+                              const ftMade = freeThrows.reduce((sum, event) => sum + (event.points ?? (event.made ? 1 : 0)), 0)
+                              const ftAttempts = freeThrows.reduce((sum, event) => sum + ((event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1), 0)
+                              const pct = (made: number, attempts: number) => attempts ? `${Math.round(made / attempts * 100)}%` : '0%'
+                              const values: (string | number)[] = [points, `${madeShots}/${shots.length}`, pct(madeShots, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), `${ftMade}/${ftAttempts}`, pct(ftMade, ftAttempts), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('assist'), count('turnover'), count('foul')]
+                              return (
+                                <tr key={player.id} className="border-b border-slate-100 last:border-0">
+                                  <td className="break-words px-0.5 py-1 font-semibold">#{player.number} {player.name}</td>
+                                  {values.map((value, index) => <td key={index} className={`break-words px-0.5 py-1 tabular-nums ${index === 0 ? 'font-bold text-blue-700' : ''}`}>{value}</td>)}
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-slate-50 font-bold">
+                              <td className="px-0.5 py-1">チーム合計</td>
+                              {(() => {
+                                const ev = game.events.filter(event => !event.cancelled && event.teamId === team.id)
+                                const shots = ev.filter(event => event.type === 'shot')
+                                const made = shots.filter(event => event.made).length
+                                const threes = shots.filter(event => event.points === 3)
+                                const madeThrees = threes.filter(event => event.made).length
+                                const freeThrows = ev.filter(event => event.type === 'freeThrow')
+                                const ftMade = freeThrows.reduce((sum, event) => sum + (event.points ?? (event.made ? 1 : 0)), 0)
+                                const ftAttempts = freeThrows.reduce((sum, event) => sum + ((event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1), 0)
+                                const points = ev.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
+                                const pct = (m: number, a: number) => a ? `${Math.round(m / a * 100)}%` : '0%'
+                                const totals: (string | number)[] = [points, `${made}/${shots.length}`, pct(made, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), `${ftMade}/${ftAttempts}`, pct(ftMade, ftAttempts), ...['offensiveRebound','defensiveRebound','steal','block','assist','turnover','foul'].map(type => ev.filter(event => event.type === type).length)]
+                                return totals.map((value, index) => <td key={index} className="break-words px-0.5 py-1 tabular-nums">{value}</td>)
+                              })()}
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+    )
+  }
+
+  function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
+
+                  const activeEvents = game.events
+                    .filter(event => !event.cancelled)
+                    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                  const scoringEvents = activeEvents.filter(event =>
+                    (event.type === 'shot' || event.type === 'freeThrow') && event.made &&
+                    (event.points ?? (event.type === 'freeThrow' ? 1 : 0)) > 0
+                  )
+                  const pointsOf = (event: typeof activeEvents[number]) => event.points ?? (event.type === 'freeThrow' ? 1 : 0)
+                  const scoreFor = (teamId: string) => scoringEvents.filter(event => event.teamId === teamId).reduce((sum, event) => sum + pointsOf(event), 0)
+                  const eventSymbol = (event: typeof activeEvents[number]) => {
+                    if (event.type === 'offensiveRebound') return 'O'
+                    if (event.type === 'defensiveRebound') return 'D'
+                    if (event.type === 'shot' && !event.made) return pointsOf(event) === 3 ? '〇' : '/'
+                    if (event.type === 'shot' && event.made) return pointsOf(event) === 3 ? '③' : '☓'
+                    if (event.type === 'freeThrow') {
+                      const attempts = (event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1
+                      const successes = event.made ? Math.max(0, Math.min(attempts, pointsOf(event))) : 0
+                      if (attempts === 1) return successes === 1 ? '〼' : '☐'
+                      if (attempts === 2) {
+                        if (successes === 2) return '☒'
+                        if (successes === 1) return '〼'
+                        return '☐'
+                      }
+                      if (attempts === 3) {
+                        if (successes === 3) return '☒〼'
+                        if (successes === 2) return '☒'
+                        if (successes === 1) return '〼☐'
+                        return '☐☐'
+                      }
+                      return event.made ? '〼' : '☐'
+                    }
+                    if (event.type === 'timeout') return '〼'
+                    return ''
+                  }
+                  const teamLineups = [
+                    { team: homeTeam, lineup: game.homeLineup ?? [] },
+                    { team: awayTeam, lineup: game.awayLineup ?? [] },
+                  ]
+                  const appeared = (team: Team, lineup: string[]) => team.players.filter(player =>
+                    lineup.includes(player.id) || activeEvents.some(event => event.teamId === team.id && event.playerId === player.id)
+                  )
+                  const runningScorers = (team: Team) => {
+                    let total = 0
+                    const grid: Array<{ total: number; number: string } | null> = Array(100).fill(null)
+                    scoringEvents.filter(event => event.teamId === team.id).forEach(event => {
+                      total += pointsOf(event)
+                      const player = team.players.find(item => item.id === event.playerId)
+                      if (total >= 1 && total <= 100) grid[total - 1] = { total, number: player?.number ?? '?' }
+                    })
+                    return grid
+                  }
+                  return <section className={embedded ? "relative flex h-[900px] min-w-[1000px] flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2" : "fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2"}>
+                    <div className="mb-1 flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 pb-1">
+                      <div className="min-w-0 w-[50%] shrink-0 text-center">
+                        <h3 className="truncate text-sm font-black">{game.name}</h3>
+                        <div className="flex items-center justify-center gap-3 text-xs font-bold"><span>{homeTeam.name} <b className="text-lg">{scoreFor(homeTeam.id)}</b></span><span>VS</span><span><b className="text-lg">{scoreFor(awayTeam.id)}</b> {awayTeam.name}</span></div>
+                      </div>
+                      <div className="min-w-0 flex-1 overflow-hidden" aria-label="クォーター別スコア">
+                        <table className="w-full table-fixed border-collapse text-[9px] leading-none tabular-nums">
+                          <thead><tr className="bg-slate-100"><th className="w-[30%] whitespace-nowrap border border-slate-400 px-1 py-0.5">チーム</th>{visibleQuarters(game).map(q => <th key={q} className="whitespace-nowrap border border-slate-400 px-1 py-0.5">{quarterLabel(q)}</th>)}<th className="border border-slate-400 px-1 py-0.5">合計</th></tr></thead>
+                          <tbody>{[homeTeam, awayTeam].map(team => {
+                            const teamScoringEvents = scoringEvents.filter(event => event.teamId === team.id)
+                            const byQuarter = (q: number) => teamScoringEvents.filter(event => event.quarter === q).reduce((sum, event) => sum + pointsOf(event), 0)
+                            return <tr key={team.id}><th className="overflow-hidden text-ellipsis whitespace-nowrap border border-slate-400 px-1 py-0.5 text-left" title={team.name}>{team.name}</th>{visibleQuarters(game).map(q => <td key={q} className="border border-slate-400 px-1 py-0.5 text-center">{byQuarter(q)}</td>)}<td className="border border-slate-400 px-1 py-0.5 text-center font-black">{scoreFor(team.id)}</td></tr>
+                          })}</tbody>
+                        </table>
+                      </div>
+                      {!embedded && <button type="button" onClick={() => setRecordView('official')} className="shrink-0 rounded border border-slate-400 px-2 py-1 text-xs font-bold">記録画面へ戻る</button>}
+                    </div>
+                    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 gap-1 overflow-hidden">
+                    {teamLineups.map(({team, lineup}) => {
+                      const players = appeared(team, lineup)
+                      const teamEvents = activeEvents.filter(event => event.teamId === team.id)
+                      const quarterScore = (q: number) => teamEvents.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0)
+                      const runners = runningScorers(team)
+                      return <div key={team.id} className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-slate-500">
+                        <h4 className="shrink-0 border border-slate-700 bg-slate-200 px-1 py-0.5 text-xs font-black">{team.name}　合計 {scoreFor(team.id)} 点</h4>
+                        <div className="min-h-0 flex-1 overflow-hidden">
+                          <table className="w-full table-fixed border-collapse text-[10px] leading-tight">
+                            <colgroup>
+                              <col style={{ width: '4%' }} />
+                              <col style={{ width: '8%' }} />
+                              {visibleQuarters(game).map(q => <col key={`attendance-${q}`} style={{ width: `${8 / visibleQuarters(game).length}%` }} />)}
+                              <col style={{ width: '8%' }} />
+                              {visibleQuarters(game).map(q => <col key={`score-${q}`} style={{ width: `${52 / visibleQuarters(game).length}%` }} />)}
+                              {[1, 2, 3, 4, 5].map(i => <col key={`summary-${i}`} style={{ width: '4%' }} />)}
+                            </colgroup>
+                            <thead>
+                              <tr className="bg-slate-100">
+                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">No.</th>
+                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-left align-middle">選手名</th>
+                                <th colSpan={visibleQuarters(game).length} className="border border-slate-500 px-0 py-0.5 text-center">出場時間</th>
+                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">ファウル</th>
+                                {visibleQuarters(game).map(q => <th key={q} rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
+                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
+                              </tr>
+                              <tr className="bg-slate-100">{visibleQuarters(game).map(q => <th key={q} className="border border-slate-500 px-0 py-0.5 text-center">{q}</th>)}</tr>
+                            </thead>
+                            <tbody>{players.map(player => {
+                              const pe = teamEvents.filter(event => event.playerId === player.id)
+                              const foulSymbols = pe.filter(event => event.type === 'foul').map(event => `P${(['₁','₂','₃','₄'][Math.min(event.quarter, 4) - 1] ?? '₄')}`)
+                              const qCells = visibleQuarters(game).map(q => pe.filter(event => event.quarter === q && event.type !== 'foul').map(eventSymbol).filter(Boolean))
+                              const qPoints = [1,2,3,4,5,6].map(q => pe.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0))
+                              const firstHalf = qPoints[0] + qPoints[1]
+                              const secondHalf = qPoints[2] + qPoints[3] + qPoints[4] + qPoints[5]
+                              return <tr key={player.id}>
+                                <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0.5 py-[1px] font-semibold">{player.name}</td>{visibleQuarters(game).map(q => { const storedLineups = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === game.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="border border-slate-400 px-0 py-[1px] text-center font-bold leading-none"><span className={`inline-block ${wasSubbedIn ? 'text-red-600' : 'text-black'}`}>{active ? '〼' : '☐'}</span></td> })}<td className="border border-slate-400 px-0 py-[1px] text-center align-top"><div className="flex min-h-[16px] w-full">{[0,1,2,3,4].map(slot => <span key={slot} className={`flex min-w-0 flex-1 items-start justify-center font-bold text-red-700 ${slot < 4 ? 'border-r border-slate-400' : ''}`}>{foulSymbols[slot] ?? ''}</span>)}</div></td>
+                                {qCells.map((symbols, i) => <td key={i} className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{symbols.length ? symbols.map((symbol, j) => <span key={j} className={`inline-block ${(['/', '〇', '☐', '☐☐', '〼☐'].includes(symbol)) ? 'font-bold text-red-700' : ''}`}>{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>)}
+                                <td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
+                              </tr>
+                            })}</tbody>
+                            <tfoot><tr className="bg-slate-100 font-black"><td colSpan={3 + visibleQuarters(game).length} className="border border-slate-500 p-1">チーム合計</td>{visibleQuarters(game).map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'offensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'defensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
+                          </table>
+                        </div>
+                        <div className="mt-1 shrink-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,6fr)] gap-0.5 items-start">
+                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
+                            <div className="mb-0.5 text-center text-[8px] font-bold">タイムアウト</div>
+                            <div className="grid grid-cols-4 gap-x-0.5 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`to-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'timeout').length; return <div key={`to-${q}`} className="text-xs font-bold">{count ? '〼'.repeat(Math.min(timeoutLimit,count)) : '☐'}</div> })}</div>
+                          </div>
+                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
+                            <div className="mb-0.5 text-center text-[8px] font-bold">チームファウル</div>
+                            <div className="grid grid-cols-4 gap-x-0.5 gap-y-1 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`f-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'foul').length; return <div key={`f-${q}`} className="whitespace-nowrap text-[10px] font-bold">{'☒'.repeat(Math.min(4,count))}{'☐'.repeat(Math.max(0,4-count))}</div> })}</div>
+                          </div>
+                          <div className="min-w-0 border border-slate-400 px-1 py-0.5">
+                            <div className="mb-0.5 flex justify-between gap-1 text-[8px] font-bold"><span className="truncate">ランニングスコア（得点時の背番号）</span><span>100点</span></div>
+                            <div className="grid gap-0" style={{ gridTemplateColumns: 'repeat(50, minmax(0, 1fr))' }}>{Array.from({length:100}, (_, i) => {
+                              const item = runners[i]
+                              return <div key={i} className="min-w-0 border border-slate-300 text-center leading-none"><div className="text-[6px] text-slate-500">{i+1}</div><div className="h-3 truncate text-[8px] font-bold">{item ? item.number : ''}</div></div>
+                            })}</div>
+                          </div>
+                        </div>
+                      </div>
+                    })}
+                    </div>
+                  </section>
+
+  }
+
   if (loading) {
     return <main className="min-h-screen bg-slate-100 p-6">データを読み込んでいます...</main>
   }
@@ -731,7 +969,7 @@ function App() {
         </header>
 
         {page !== 'game-detail' && page !== 'game-record' && (
-          <nav className="mb-6 grid grid-cols-3 gap-2 sm:gap-3">
+          <nav className="mb-6 grid grid-cols-4 gap-2 sm:gap-3">
             <button
               type="button"
               onClick={() => { setPage('teams'); setMessage('') }}
@@ -746,6 +984,7 @@ function App() {
             >
               試合管理
             </button>
+            <button type="button" onClick={() => { setPage('stats'); setStatsGameIndex(-1); setStatsFullscreen(false); setMessage('') }} className={`rounded-xl px-2 py-3 text-sm font-bold sm:px-4 sm:text-base ${page === 'stats' ? 'bg-blue-700 text-white' : 'border border-slate-300 bg-white text-slate-700'}`}>スタッツ管理</button>
             <button
               type="button"
               onClick={() => { setPage('backup'); setMessage(''); void loadRecoveryData() }}
@@ -1031,6 +1270,74 @@ function App() {
           </>
         )}
 
+        {page === 'stats' && (() => {
+          const statsGames = [...games].sort((a, b) => {
+            const dateOf = (item: Game) => (item as DatedGame).gameDate || item.createdAt.slice(0, 10)
+            return dateOf(b).localeCompare(dateOf(a)) || b.createdAt.localeCompare(a.createdAt)
+          })
+          const index = statsGameIndex < 0 ? Math.max(0, statsGames.length - 1) : Math.min(statsGameIndex, Math.max(0, statsGames.length - 1))
+          const game = statsGames[index]
+          const statsHome = game ? teams.find(team => team.id === game.homeTeamId) : undefined
+          const statsAway = game ? teams.find(team => team.id === game.awayTeamId) : undefined
+          return <section className="space-y-4">
+            <div className="rounded-2xl bg-white p-4 shadow-sm sm:p-6">
+              <h2 className="text-2xl font-bold">スタッツ管理</h2>
+              <h3 className="mt-4 text-lg font-bold">試合一覧</h3>
+              {statsGames.length === 0 ? <p className="mt-2 text-slate-500">まだ試合がありません。「試合管理」から試合を作成してください。</p> : <>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <button type="button" aria-label="前の試合" disabled={index === 0} onClick={() => setStatsGameIndex(index - 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〈</button>
+                  <div className="min-w-0 flex-1 text-center">
+                    <p className="text-xs text-slate-500">{index + 1} / {statsGames.length} 試合</p>
+                    <p className="truncate text-lg font-black">{game.name}</p>
+                    <p className="text-sm text-slate-600">{teamLabel(game.homeTeamId)} VS {teamLabel(game.awayTeamId)}</p>
+                    <p className="text-xs text-slate-500">{(game as DatedGame).gameDate ?? game.createdAt.slice(0,10)}</p>
+                  </div>
+                  <button type="button" aria-label="次の試合" disabled={index >= statsGames.length - 1} onClick={() => setStatsGameIndex(index + 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〉</button>
+                </div>
+                <label className="mt-3 block text-sm font-semibold">試合を直接選択
+                  <select value={index} onChange={e => setStatsGameIndex(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
+                    {statsGames.map((item, i) => <option key={item.id} value={i}>{(item as DatedGame).gameDate ?? item.createdAt.slice(0,10)}　{item.name}</option>)}
+                  </select>
+                </label>
+              </>}
+            </div>
+            {game && statsHome && statsAway && <>
+              <div className="rounded-2xl bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="text-lg font-bold">スコア表示</h3>
+                  <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
+                </div>
+                <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
+                  <div style={{ height: `${900 * statsSheetScale}px`, width: '100%', position: 'relative' }}>
+                    <div style={{ width: '1000px', height: '900px', transform: `scale(${statsSheetScale})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
+                      {renderOriginalSheet(game, statsHome, statsAway, true)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
+              {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
+                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-2 py-1 sm:px-3">
+                  <span className="min-w-0 truncate text-sm font-bold">{game.name} · スタッツ管理</span>
+                  <button type="button" onClick={() => setStatsFullscreen(false)} className="shrink-0 rounded-lg border border-slate-400 px-3 py-1 text-sm font-bold">× 閉じる</button>
+                </div>
+                <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+                  <div className="w-full bg-white">
+                    <div className="border-b border-slate-300 px-2 py-1 text-sm font-bold">スコア表示</div>
+                    <div className="w-full [&>section]:!h-full [&>section]:!min-w-0" style={{ height: 'calc(100dvh - 78px)' }}>
+                      {renderOriginalSheet(game, statsHome, statsAway, true)}
+                    </div>
+                  </div>
+                  <div className="w-full border-t-2 border-slate-300 bg-white p-1 sm:p-2 stats-box-score">
+                    {renderBoxScore(game, statsHome, statsAway)}
+                  </div>
+                </div>
+              </div>}
+            </>}
+            {game && (!statsHome || !statsAway) && <p className="rounded-xl bg-white p-4 text-red-700">この試合のチーム情報が見つかりません。</p>}
+          </section>
+        })()}
+
         {page === 'game-detail' && (
           <section className="rounded-2xl bg-white p-5 shadow-sm sm:p-6">
             <button
@@ -1130,7 +1437,7 @@ function App() {
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
                   <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
-                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>オリジナル表示</button>
+                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center justify-between gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs">
                   <label htmlFor="timeout-limit" className="font-semibold">設定：各クォーターのタイムアウト上限</label>
@@ -1323,215 +1630,10 @@ function App() {
                   </div>
                 </section>
 
-                <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
-                  <div className="mb-1">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-bold">ボックススコア</h3>
-                        <p className="text-xs text-slate-500">記録に応じて自動更新</p>
-                      </div>
-                    </div>
-                  </div>
-                  {[{ team: homeTeam, lineup: selectedGame.homeLineup ?? [] }, { team: awayTeam, lineup: selectedGame.awayLineup ?? [] }].map(({ team }) => (
-                    <div key={team.id} className="mb-2 last:mb-0">
-                      <h4 className="mb-1 text-sm font-bold">{team.name}</h4>
-                      <div className="overflow-x-auto">
-                        <table className="w-full min-w-[900px] border-collapse text-xs">
-                          <thead>
-                            <tr className="bg-slate-100 text-left">
-                              {['選手', '得点', 'FG', 'FG%', '3FG', '3FG%', 'FT', 'FT%', 'OREB', 'DREB', 'STL', 'BLK', 'AST', 'TO', 'PF'].map(label => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-1.5 py-1 font-semibold">{label}</th>)}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {team.players.filter(player => {
-                              const initialLineup = team.id === selectedGame.homeTeamId ? (selectedGame.homeLineup ?? []) : (selectedGame.awayLineup ?? [])
-                              const hasPlayedEvent = selectedGame.events.some(event => !event.cancelled && event.teamId === team.id && (event.playerId === player.id || event.relatedPlayerId === player.id))
-                              return initialLineup.includes(player.id) || hasPlayedEvent
-                            }).map(player => {
-                              const playerEvents = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id && event.playerId === player.id)
-                              const count = (type: string) => playerEvents.filter(event => event.type === type).length
-                              const points = playerEvents.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
-                              const shots = playerEvents.filter(event => event.type === 'shot')
-                              const madeShots = shots.filter(event => event.made).length
-                              const threes = shots.filter(event => event.points === 3)
-                              const madeThrees = threes.filter(event => event.made).length
-                              const freeThrows = playerEvents.filter(event => event.type === 'freeThrow')
-                              const ftMade = freeThrows.reduce((sum, event) => sum + (event.points ?? (event.made ? 1 : 0)), 0)
-                              const ftAttempts = freeThrows.reduce((sum, event) => sum + ((event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1), 0)
-                              const pct = (made: number, attempts: number) => attempts ? `${Math.round(made / attempts * 100)}%` : '0%'
-                              const values: (string | number)[] = [points, `${madeShots}/${shots.length}`, pct(madeShots, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), `${ftMade}/${ftAttempts}`, pct(ftMade, ftAttempts), count('offensiveRebound'), count('defensiveRebound'), count('steal'), count('block'), count('assist'), count('turnover'), count('foul')]
-                              return (
-                                <tr key={player.id} className="border-b border-slate-100 last:border-0">
-                                  <td className="whitespace-nowrap px-2 py-1 font-semibold">#{player.number} {player.name}</td>
-                                  {values.map((value, index) => <td key={index} className={`px-2 py-1 tabular-nums ${index === 0 ? 'font-bold text-blue-700' : ''}`}>{value}</td>)}
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                          <tfoot>
-                            <tr className="bg-slate-50 font-bold">
-                              <td className="px-2 py-1">チーム合計</td>
-                              {(() => {
-                                const ev = selectedGame.events.filter(event => !event.cancelled && event.teamId === team.id)
-                                const shots = ev.filter(event => event.type === 'shot')
-                                const made = shots.filter(event => event.made).length
-                                const threes = shots.filter(event => event.points === 3)
-                                const madeThrees = threes.filter(event => event.made).length
-                                const freeThrows = ev.filter(event => event.type === 'freeThrow')
-                                const ftMade = freeThrows.reduce((sum, event) => sum + (event.points ?? (event.made ? 1 : 0)), 0)
-                                const ftAttempts = freeThrows.reduce((sum, event) => sum + ((event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1), 0)
-                                const points = ev.filter(event => (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + (event.points ?? (event.type === 'freeThrow' ? 1 : 0)), 0)
-                                const pct = (m: number, a: number) => a ? `${Math.round(m / a * 100)}%` : '0%'
-                                const totals: (string | number)[] = [points, `${made}/${shots.length}`, pct(made, shots.length), `${madeThrees}/${threes.length}`, pct(madeThrees, threes.length), `${ftMade}/${ftAttempts}`, pct(ftMade, ftAttempts), ...['offensiveRebound','defensiveRebound','steal','block','assist','turnover','foul'].map(type => ev.filter(event => event.type === type).length)]
-                                return totals.map((value, index) => <td key={index} className="whitespace-nowrap px-2 py-1 tabular-nums">{value}</td>)
-                              })()}
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                    </div>
-                  ))}
-                </section>
+                {renderBoxScore(selectedGame, homeTeam, awayTeam)}
               </>
                 )}
-                {recordView === 'original' && (() => {
-                  const activeEvents = selectedGame.events
-                    .filter(event => !event.cancelled)
-                    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-                  const scoringEvents = activeEvents.filter(event =>
-                    (event.type === 'shot' || event.type === 'freeThrow') && event.made &&
-                    (event.points ?? (event.type === 'freeThrow' ? 1 : 0)) > 0
-                  )
-                  const pointsOf = (event: typeof activeEvents[number]) => event.points ?? (event.type === 'freeThrow' ? 1 : 0)
-                  const scoreFor = (teamId: string) => scoringEvents.filter(event => event.teamId === teamId).reduce((sum, event) => sum + pointsOf(event), 0)
-                  const eventSymbol = (event: typeof activeEvents[number]) => {
-                    if (event.type === 'offensiveRebound') return 'O'
-                    if (event.type === 'defensiveRebound') return 'D'
-                    if (event.type === 'shot' && !event.made) return pointsOf(event) === 3 ? '〇' : '/'
-                    if (event.type === 'shot' && event.made) return pointsOf(event) === 3 ? '③' : '☓'
-                    if (event.type === 'freeThrow') {
-                      const attempts = (event as typeof event & { freeThrowAttempts?: number }).freeThrowAttempts ?? 1
-                      const successes = event.made ? Math.max(0, Math.min(attempts, pointsOf(event))) : 0
-                      if (attempts === 1) return successes === 1 ? '〼' : '☐'
-                      if (attempts === 2) {
-                        if (successes === 2) return '☒'
-                        if (successes === 1) return '〼'
-                        return '☐'
-                      }
-                      if (attempts === 3) {
-                        if (successes === 3) return '☒〼'
-                        if (successes === 2) return '☒'
-                        if (successes === 1) return '〼☐'
-                        return '☐☐'
-                      }
-                      return event.made ? '〼' : '☐'
-                    }
-                    if (event.type === 'timeout') return '〼'
-                    return ''
-                  }
-                  const teamLineups = [
-                    { team: homeTeam, lineup: selectedGame.homeLineup ?? [] },
-                    { team: awayTeam, lineup: selectedGame.awayLineup ?? [] },
-                  ]
-                  const appeared = (team: Team, lineup: string[]) => team.players.filter(player =>
-                    lineup.includes(player.id) || activeEvents.some(event => event.teamId === team.id && event.playerId === player.id)
-                  )
-                  const runningScorers = (team: Team) => {
-                    let total = 0
-                    const grid: Array<{ total: number; number: string } | null> = Array(100).fill(null)
-                    scoringEvents.filter(event => event.teamId === team.id).forEach(event => {
-                      total += pointsOf(event)
-                      const player = team.players.find(item => item.id === event.playerId)
-                      if (total >= 1 && total <= 100) grid[total - 1] = { total, number: player?.number ?? '?' }
-                    })
-                    return grid
-                  }
-                  return <section className="fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2">
-                    <div className="mb-1 flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 pb-1">
-                      <div className="min-w-0 w-[50%] shrink-0 text-center">
-                        <div className="text-[9px] font-bold tracking-widest">TEAM LINK · ORIGINAL SCORE SHEET</div>
-                        <h3 className="truncate text-sm font-black">{selectedGame.name}</h3>
-                        <div className="flex items-center justify-center gap-3 text-xs font-bold"><span>{homeTeam.name} <b className="text-lg">{scoreFor(homeTeam.id)}</b></span><span>VS</span><span><b className="text-lg">{scoreFor(awayTeam.id)}</b> {awayTeam.name}</span></div>
-                      </div>
-                      <div className="min-w-0 flex-1 overflow-hidden" aria-label="クォーター別スコア">
-                        <table className="w-full table-fixed border-collapse text-[9px] leading-none tabular-nums">
-                          <thead><tr className="bg-slate-100"><th className="w-[30%] whitespace-nowrap border border-slate-400 px-1 py-0.5">チーム</th>{visibleQuarters(selectedGame).map(q => <th key={q} className="whitespace-nowrap border border-slate-400 px-1 py-0.5">{quarterLabel(q)}</th>)}<th className="border border-slate-400 px-1 py-0.5">合計</th></tr></thead>
-                          <tbody>{[homeTeam, awayTeam].map(team => {
-                            const teamScoringEvents = scoringEvents.filter(event => event.teamId === team.id)
-                            const byQuarter = (q: number) => teamScoringEvents.filter(event => event.quarter === q).reduce((sum, event) => sum + pointsOf(event), 0)
-                            return <tr key={team.id}><th className="overflow-hidden text-ellipsis whitespace-nowrap border border-slate-400 px-1 py-0.5 text-left" title={team.name}>{team.name}</th>{visibleQuarters(selectedGame).map(q => <td key={q} className="border border-slate-400 px-1 py-0.5 text-center">{byQuarter(q)}</td>)}<td className="border border-slate-400 px-1 py-0.5 text-center font-black">{scoreFor(team.id)}</td></tr>
-                          })}</tbody>
-                        </table>
-                      </div>
-                      <button type="button" onClick={() => setRecordView('official')} className="shrink-0 rounded border border-slate-400 px-2 py-1 text-xs font-bold">記録画面へ戻る</button>
-                    </div>
-                    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 gap-1 overflow-hidden">
-                    {teamLineups.map(({team, lineup}) => {
-                      const players = appeared(team, lineup)
-                      const teamEvents = activeEvents.filter(event => event.teamId === team.id)
-                      const quarterScore = (q: number) => teamEvents.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0)
-                      const runners = runningScorers(team)
-                      return <div key={team.id} className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-slate-500">
-                        <h4 className="shrink-0 border border-slate-700 bg-slate-200 px-1 py-0.5 text-xs font-black">{team.name}　合計 {scoreFor(team.id)} 点</h4>
-                        <div className="min-h-0 flex-1 overflow-hidden">
-                          <table className="w-full table-fixed border-collapse text-[10px] leading-tight">
-                            <colgroup>
-                              <col style={{ width: '4%' }} />
-                              <col style={{ width: '8%' }} />
-                              {visibleQuarters(selectedGame).map(q => <col key={`attendance-${q}`} style={{ width: `${8 / visibleQuarters(selectedGame).length}%` }} />)}
-                              <col style={{ width: '8%' }} />
-                              {visibleQuarters(selectedGame).map(q => <col key={`score-${q}`} style={{ width: `${52 / visibleQuarters(selectedGame).length}%` }} />)}
-                              {[1, 2, 3, 4, 5].map(i => <col key={`summary-${i}`} style={{ width: '4%' }} />)}
-                            </colgroup>
-                            <thead>
-                              <tr className="bg-slate-100">
-                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">No.</th>
-                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-left align-middle">選手名</th>
-                                <th colSpan={visibleQuarters(selectedGame).length} className="border border-slate-500 px-0 py-0.5 text-center">出場時間</th>
-                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">ファウル</th>
-                                {visibleQuarters(selectedGame).map(q => <th key={q} rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
-                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
-                              </tr>
-                              <tr className="bg-slate-100">{visibleQuarters(selectedGame).map(q => <th key={q} className="border border-slate-500 px-0 py-0.5 text-center">{q}</th>)}</tr>
-                            </thead>
-                            <tbody>{players.map(player => {
-                              const pe = teamEvents.filter(event => event.playerId === player.id)
-                              const foulSymbols = pe.filter(event => event.type === 'foul').map(event => `P${(['₁','₂','₃','₄'][Math.min(event.quarter, 4) - 1] ?? '₄')}`)
-                              const qCells = visibleQuarters(selectedGame).map(q => pe.filter(event => event.quarter === q && event.type !== 'foul').map(eventSymbol).filter(Boolean))
-                              const qPoints = [1,2,3,4,5,6].map(q => pe.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0))
-                              const firstHalf = qPoints[0] + qPoints[1]
-                              const secondHalf = qPoints[2] + qPoints[3] + qPoints[4] + qPoints[5]
-                              return <tr key={player.id}>
-                                <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0.5 py-[1px] font-semibold">{player.name}</td>{visibleQuarters(selectedGame).map(q => { const storedLineups = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === selectedGame.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="border border-slate-400 px-0 py-[1px] text-center font-bold leading-none"><span className={`inline-block ${wasSubbedIn ? 'text-red-600' : 'text-black'}`}>{active ? '〼' : '☐'}</span></td> })}<td className="border border-slate-400 px-0 py-[1px] text-center align-top"><div className="flex min-h-[16px] w-full">{[0,1,2,3,4].map(slot => <span key={slot} className={`flex min-w-0 flex-1 items-start justify-center font-bold text-red-700 ${slot < 4 ? 'border-r border-slate-400' : ''}`}>{foulSymbols[slot] ?? ''}</span>)}</div></td>
-                                {qCells.map((symbols, i) => <td key={i} className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{symbols.length ? symbols.map((symbol, j) => <span key={j} className={`inline-block ${(['/', '〇', '☐', '☐☐', '〼☐'].includes(symbol)) ? 'font-bold text-red-700' : ''}`}>{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>)}
-                                <td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
-                              </tr>
-                            })}</tbody>
-                            <tfoot><tr className="bg-slate-100 font-black"><td colSpan={3 + visibleQuarters(selectedGame).length} className="border border-slate-500 p-1">チーム合計</td>{visibleQuarters(selectedGame).map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'offensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'defensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
-                          </table>
-                        </div>
-                        <div className="mt-1 shrink-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,6fr)] gap-0.5 items-start">
-                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
-                            <div className="mb-0.5 text-center text-[8px] font-bold">タイムアウト</div>
-                            <div className="grid grid-cols-4 gap-x-0.5 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`to-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'timeout').length; return <div key={`to-${q}`} className="text-xs font-bold">{count ? '〼'.repeat(Math.min(timeoutLimit,count)) : '☐'}</div> })}</div>
-                          </div>
-                          <div className="min-w-0 self-start border border-slate-400 px-0.5 py-0.5">
-                            <div className="mb-0.5 text-center text-[8px] font-bold">チームファウル</div>
-                            <div className="grid grid-cols-4 gap-x-0.5 gap-y-1 text-center text-[8px] leading-tight">{[1,2,3,4].map(q => <div key={`f-label-${q}`} className="font-semibold">{q}Q</div>)}{[1,2,3,4].map(q => { const count = teamEvents.filter(e => e.quarter === q && e.type === 'foul').length; return <div key={`f-${q}`} className="whitespace-nowrap text-[10px] font-bold">{'☒'.repeat(Math.min(4,count))}{'☐'.repeat(Math.max(0,4-count))}</div> })}</div>
-                          </div>
-                          <div className="min-w-0 border border-slate-400 px-1 py-0.5">
-                            <div className="mb-0.5 flex justify-between gap-1 text-[8px] font-bold"><span className="truncate">ランニングスコア（得点時の背番号）</span><span>100点</span></div>
-                            <div className="grid gap-0" style={{ gridTemplateColumns: 'repeat(50, minmax(0, 1fr))' }}>{Array.from({length:100}, (_, i) => {
-                              const item = runners[i]
-                              return <div key={i} className="min-w-0 border border-slate-300 text-center leading-none"><div className="text-[6px] text-slate-500">{i+1}</div><div className="h-3 truncate text-[8px] font-bold">{item ? item.number : ''}</div></div>
-                            })}</div>
-                          </div>
-                        </div>
-                      </div>
-                    })}
-                    </div>
-                  </section>
-                })()}
+                {recordView === 'original' && renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
               </>
             )}
           </section>
