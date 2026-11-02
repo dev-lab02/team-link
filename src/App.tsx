@@ -27,6 +27,18 @@ const todayLocal = () => {
 }
 type RecordView = 'official' | 'original'
 
+// 背番号は 1〜99 → 0 → 00 の順に並べる（選手IDや保存データは変更しない）
+const sortPlayersForSelection = <T extends { number: string | number }>(players: T[]): T[] => {
+  const rank = (number: string | number): number => {
+    const value = String(number)
+    if (value === '0') return 100
+    if (value === '00') return 101
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 99 ? parsed : 102
+  }
+  return [...players].sort((a, b) => rank(a.number) - rank(b.number))
+}
+
 // 延長戦に進んだ場合のみ、該当する延長クォーターを表示する
 const visibleQuarters = (game: Game): number[] => {
   const lastQuarter = Math.min(6, Math.max(4, game.currentQuarter, ...game.events.filter(e => !e.cancelled).map(e => e.quarter)))
@@ -1399,7 +1411,7 @@ function App() {
                       </div>
                       <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-slate-500">カードを押すと選択・解除できます。各チーム最大5人です。</p><button type="button" disabled={lineup.length === 0 || saving} onClick={() => { side === 'home' ? setHomeLineup([]) : setAwayLineup([]); setMessage('') }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-40">全てクリア</button></div>
                       <div className="grid grid-cols-10 gap-1">
-                        {team.players.map((player) => {
+                        {sortPlayersForSelection(team.players).map((player) => {
                           const checked = lineup.includes(player.id)
                           const disabled = !checked && lineup.length >= 5
                           return (
@@ -1458,7 +1470,7 @@ function App() {
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                   <div className="grid grid-cols-10 gap-1">
-                    {team.players.map(player => {
+                    {sortPlayersForSelection(team.players).map(player => {
                       const checked = substitutionLineup.includes(player.id)
                       const disabled = !checked && substitutionLineup.length >= 5
                       return <button key={player.id} type="button" disabled={disabled || saving} onClick={() => toggleSubstitutionPlayer(player.id)} aria-pressed={checked}
