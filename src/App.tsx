@@ -90,8 +90,8 @@ function App() {
   const [homeLineup, setHomeLineup] = useState<string[]>([])
   const [awayLineup, setAwayLineup] = useState<string[]>([])
   const [lineupSetupQuarter, setLineupSetupQuarter] = useState(1)
-  const [subOutByTeam, setSubOutByTeam] = useState<Record<string, string>>({})
-  const [subInByTeam, setSubInByTeam] = useState<Record<string, string>>({})
+  const [substitutionTeamId, setSubstitutionTeamId] = useState<string | null>(null)
+  const [substitutionLineup, setSubstitutionLineup] = useState<string[]>([])
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
   const [recordView, setRecordView] = useState<RecordView>('official')
   const [historyModalOpen, setHistoryModalOpen] = useState(false)
@@ -531,39 +531,69 @@ function App() {
     setPage('game-detail')
   }
 
-  async function handleSubstitution(team: Team, outPlayerId: string, inPlayerId: string) {
+  function openSubstitution(teamId: string, currentLineup: string[]) {
+    setSubstitutionTeamId(teamId)
+    setSubstitutionLineup([...currentLineup])
+    setMessage('')
+  }
+
+  function toggleSubstitutionPlayer(playerId: string) {
+    setSubstitutionLineup(current => {
+      if (current.includes(playerId)) return current.filter(id => id !== playerId)
+      if (current.length >= 5) return current
+      return [...current, playerId]
+    })
+  }
+
+  async function handleSaveSubstitution() {
     const game = games.find(item => item.id === selectedGameId)
-    if (!game || !outPlayerId || !inPlayerId || outPlayerId === inPlayerId) {
-      setMessage('交代する選手と入る選手を選択してください。')
+    const team = teams.find(item => item.id === substitutionTeamId)
+    if (!game || !team || game.status === 'completed') return
+    if (substitutionLineup.length !== 5 || new Set(substitutionLineup).size !== 5 ||
+        substitutionLineup.some(id => !team.players.some(player => player.id === id))) {
+      setMessage('出場する選手を5人選択してください。')
       return
     }
-    const stored = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
-    const side = team.id === game.homeTeamId ? 'home' : 'away'
-    const fallback = side === 'home' ? (game.homeLineup ?? []) : (game.awayLineup ?? [])
-    const active = [...(stored[game.currentQuarter]?.[side] ?? fallback)]
-    if (!active.includes(outPlayerId) || active.includes(inPlayerId)) {
-      setMessage('交代元は出場中、交代で入る選手はベンチの選手を選んでください。')
-      return
-    }
-    const event = { id: crypto.randomUUID(), type: 'substitution' as const, teamId: team.id, playerId: inPlayerId, relatedPlayerId: outPlayerId, quarter: game.currentQuarter, createdAt: new Date().toISOString() }
+    const side = team.id === game.homeTeamId ? 'home' : team.id === game.awayTeamId ? 'away' : null
+    if (!side) return
+    setSaving(true)
+    setMessage('')
     try {
       await updateGame(game.id, current => {
-        const latestLineups = (current as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
-        const latestSide = team.id === current.homeTeamId ? 'home' : 'away'
-        const latestActive = latestLineups[current.currentQuarter]?.[latestSide] ?? (latestSide === 'home' ? current.homeLineup ?? [] : current.awayLineup ?? [])
-        if (!latestActive.includes(outPlayerId) || latestActive.includes(inPlayerId)) throw new Error('交代対象が変更されています。')
-        const latestNext = latestActive.map(id => id === outPlayerId ? inPlayerId : id)
-        const updatedLineups = { ...latestLineups, [current.currentQuarter]: { ...(latestLineups[current.currentQuarter] ?? { home: current.homeLineup ?? [], away: current.awayLineup ?? [] }), [latestSide]: latestNext } }
-        return { ...current, quarterLineups: updatedLineups, events: [...current.events, { ...event, quarter: current.currentQuarter }], status: 'in-progress', updatedAt: new Date().toISOString() } as Game
+        if (current.status === 'completed') throw new Error('終了した試合は変更できません。')
+        const lineups = (current as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
+        const currentQuarter = current.currentQuarter
+        const existing = lineups[currentQuarter]?.[side] ?? (side === 'home' ? current.homeLineup ?? [] : current.awayLineup ?? [])
+        const outgoing = existing.filter(id => !substitutionLineup.includes(id))
+        const incoming = substitutionLineup.filter(id => !existing.includes(id))
+        if (existing.length !== 5 || outgoing.length !== incoming.length) throw new Error('現在の出場選手が変更されています。')
+        const createdAt = new Date().toISOString()
+        const events = incoming.map((playerId, index) => ({
+          id: crypto.randomUUID(), type: 'substitution' as const, teamId: team.id,
+          playerId, relatedPlayerId: outgoing[index], quarter: currentQuarter, createdAt,
+        }))
+        return {
+          ...current,
+          quarterLineups: {
+            ...lineups,
+            [currentQuarter]: {
+              ...(lineups[currentQuarter] ?? { home: current.homeLineup ?? [], away: current.awayLineup ?? [] }),
+              [side]: [...substitutionLineup],
+            },
+          },
+          events: [...current.events, ...events],
+          status: events.length ? 'in-progress' : current.status,
+          updatedAt: createdAt,
+        } as Game
       })
       await refreshData()
-      setSelectedPlayerId(inPlayerId)
-      setSubOutByTeam(current => ({ ...current, [team.id]: '' }))
-      setSubInByTeam(current => ({ ...current, [team.id]: '' }))
-      setMessage(`${team.name}の選手交代を記録しました。`)
+      setSubstitutionTeamId(null)
+      setMessage(`${team.name}の出場メンバーを登録しました。`)
     } catch (error) {
       console.error(error)
-      setMessage('選手交代を保存できませんでした。')
+      setMessage('交代を保存できませんでした。試合の状態を確認してください。')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -960,8 +990,8 @@ function App() {
     })
   }
   return (
-    <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-900 sm:px-8">
-      <div className="mx-auto max-w-5xl">
+    <main className={`min-h-screen bg-slate-100 py-8 text-slate-900 ${page === 'game-detail' ? 'px-1 sm:px-2' : 'px-4 sm:px-8'}`}>
+      <div className={`mx-auto ${page === 'game-detail' ? 'max-w-[1900px]' : 'max-w-5xl'}`}>
         <header className="mb-3">
           <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
         </header>
@@ -1335,7 +1365,7 @@ function App() {
         })()}
 
         {page === 'game-detail' && (
-          <section className="rounded-2xl bg-white p-5 shadow-sm sm:p-6">
+          <section className="rounded-2xl bg-white p-1 shadow-sm sm:p-2">
             <button
               type="button"
               onClick={() => { setPage('games'); setMessage('') }}
@@ -1355,42 +1385,41 @@ function App() {
                   {homeTeam.name} <span className="px-2 font-bold text-slate-400">VS</span> {awayTeam.name}
                 </p>
                 <p className="mt-2 text-sm text-slate-500">各チームのこのクォーターの出場選手を5人選択してください。</p>
-                <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <div className="mt-4 grid grid-cols-1 gap-2 lg:grid-cols-2">
                   {([
                     { side: 'home' as const, team: homeTeam, lineup: homeLineup, label: 'ホーム' },
                     { side: 'away' as const, team: awayTeam, lineup: awayLineup, label: 'アウェイ' },
                   ]).map(({ side, team, lineup, label }) => (
-                    <div key={side} className="rounded-xl border border-slate-200 p-4">
+                    <div key={side} className="min-w-0 rounded-xl border border-slate-200 p-1 sm:p-2">
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <h3 className="text-lg font-bold">{label}：{team.name}</h3>
                         <span className={`rounded-full px-3 py-1 text-sm font-bold ${lineup.length === 5 ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-700'}`}>
                           {lineup.length}/5人
                         </span>
                       </div>
-                      <p className="mb-3 text-sm text-slate-500">選手名を押して選択・解除できます。</p>
-                      <div className="max-h-[32rem] space-y-2 overflow-y-auto">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-slate-500">カードを押すと選択・解除できます。各チーム最大5人です。</p><button type="button" disabled={lineup.length === 0 || saving} onClick={() => { side === 'home' ? setHomeLineup([]) : setAwayLineup([]); setMessage('') }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-40">全てクリア</button></div>
+                      <div className="grid grid-cols-10 gap-1">
                         {team.players.map((player) => {
                           const checked = lineup.includes(player.id)
                           const disabled = !checked && lineup.length >= 5
                           return (
-                            <label
+                            <button
                               key={player.id}
-                              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 ${checked ? 'border-blue-600 bg-blue-50' : 'border-slate-200'} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => toggleLineup(player.id, side)}
+                              aria-pressed={checked}
+                              className={`min-w-0 rounded-lg border px-1 py-3 text-center transition-colors ${checked ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-200 bg-white text-slate-800'} ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
                             >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={disabled}
-                                onChange={() => toggleLineup(player.id, side)}
-                                className="h-5 w-5 accent-blue-700"
-                              />
-                              <span className="w-14 shrink-0 text-center font-bold">#{player.number}</span>
-                              <span className="min-w-0 flex-1">{player.name}</span>
-                              {checked && <span className="text-sm font-bold text-blue-700">先発</span>}
-                            </label>
+                              <span className="block font-bold">#{player.number}</span>
+                              <span className="block truncate text-xs">{checked ? '選択中' : player.name}</span>
+                            </button>
                           )
                         })}
                       </div>
+                      {lineup.length === 5 && (
+                        <p className="mt-2 text-xs text-slate-500">5人選択済みです。変更する場合は選択中のカードを押して解除してください。</p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1406,6 +1435,50 @@ function App() {
             )}
           </section>
         )}
+
+        {substitutionTeamId && page === 'game-record' && selectedGame && (() => {
+          const team = teams.find(item => item.id === substitutionTeamId)
+          if (!team) return null
+          const side = team.id === selectedGame.homeTeamId ? 'home' : 'away'
+          const lineups = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
+          const original = lineups[selectedGame.currentQuarter]?.[side] ?? (side === 'home' ? selectedGame.homeLineup ?? [] : selectedGame.awayLineup ?? [])
+          const changes = substitutionLineup.filter(id => !original.includes(id)).length
+          return (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-1 sm:p-2" role="dialog" aria-modal="true" aria-label="出場選手の交代">
+              <div className="flex max-h-[97dvh] w-full max-w-[1600px] flex-col rounded-2xl bg-white p-2 shadow-2xl sm:p-3">
+                <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-black">交代：{team.name}</h3>
+                    <p className="text-xs text-slate-500">出場する5人を選択してください。青色が選択中です。</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-3 py-1 text-sm font-bold ${substitutionLineup.length === 5 ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'}`}>{substitutionLineup.length}/5人</span>
+                </div>
+                <div className="mb-2 flex shrink-0 justify-end">
+                  <button type="button" disabled={saving || substitutionLineup.length === 0} onClick={() => { setSubstitutionLineup([]); setMessage('') }} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-40">全てクリア</button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                  <div className="grid grid-cols-10 gap-1">
+                    {team.players.map(player => {
+                      const checked = substitutionLineup.includes(player.id)
+                      const disabled = !checked && substitutionLineup.length >= 5
+                      return <button key={player.id} type="button" disabled={disabled || saving} onClick={() => toggleSubstitutionPlayer(player.id)} aria-pressed={checked}
+                        className={`min-w-0 rounded-lg border px-1 py-2 text-center transition-colors ${checked ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-200 bg-white text-slate-800'} ${disabled ? 'cursor-not-allowed opacity-40' : ''}`}>
+                        <span className="block text-sm font-black sm:text-base">#{player.number}</span>
+                        <span className="block truncate text-[10px] sm:text-xs">{checked ? '選択中' : player.name}</span>
+                      </button>
+                    })}
+                  </div>
+                </div>
+                <div className="mt-3 grid shrink-0 grid-cols-3 gap-2 border-t border-slate-200 pt-3">
+                  <button type="button" disabled={saving} onClick={() => setSubstitutionTeamId(null)} className="min-w-0 rounded-lg border border-slate-300 px-2 py-3 font-bold">キャンセル</button>
+                  <button type="button" disabled={saving || substitutionLineup.length !== 5} onClick={() => void handleSaveSubstitution()} className="col-span-2 min-w-0 rounded-lg bg-blue-700 px-2 py-3 font-black text-white disabled:opacity-40">
+                    {saving ? '保存中…' : `登録${changes ? `（${changes}人交代）` : ''}`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
         {page === 'game-record' && (
           <section className="rounded-2xl bg-white p-2 shadow-sm sm:p-3">
@@ -1458,7 +1531,6 @@ function App() {
                   {[{team:homeTeam, side:'home' as const, label:'ホーム'}, {team:awayTeam, side:'away' as const, label:'アウェイ'}].map(({team,side,label}) => {
                     const stored = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
                     const lineup = stored[selectedGame.currentQuarter]?.[side] ?? (side === 'home' ? selectedGame.homeLineup ?? [] : selectedGame.awayLineup ?? [])
-                    const bench = team.players.filter(p => !lineup.includes(p.id))
                     return (
                     <div key={team.id} className={`min-w-0 rounded-lg border border-slate-200 p-1.5 ${side === 'home' ? 'order-1' : 'order-3'}`}>
                       <h3 className="mb-1 truncate text-sm font-bold">{label}：{team.name}</h3>
@@ -1469,14 +1541,11 @@ function App() {
                           </button>
                         ))}
                       </div>
-                      {selectedGame.status !== 'completed' && <div className="mt-2 rounded-md bg-slate-50 p-1">
-                        <p className="mb-1 text-sm font-black">選手交代</p>
-                        <div className="grid grid-cols-2 gap-1">
-                          <select aria-label={`${label}交代する選手`} value={subOutByTeam[team.id] ?? ''} onChange={e => setSubOutByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-3 text-base font-semibold"><option value="">交代する選手</option>{team.players.filter(p => lineup.includes(p.id)).map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
-                          <select aria-label={`${label}入る選手`} value={subInByTeam[team.id] ?? ''} onChange={e => setSubInByTeam(current => ({...current, [team.id]: e.target.value}))} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-3 text-base font-semibold"><option value="">入る選手</option>{bench.map(p => <option key={p.id} value={p.id}>#{p.number} {p.name}</option>)}</select>
-                        </div>
-                        <button type="button" onClick={() => void handleSubstitution(team, subOutByTeam[team.id] ?? '', subInByTeam[team.id] ?? '')} className="mt-1 w-full rounded-lg bg-amber-600 px-3 py-3.5 text-lg font-black text-white shadow active:translate-y-0.5">交代を記録</button>
-                      </div>}
+                      {selectedGame.status !== 'completed' && (
+                        <button type="button" onClick={() => openSubstitution(team.id, lineup)} className="mt-2 w-full rounded-lg bg-amber-600 px-3 py-3.5 text-lg font-black text-white shadow active:translate-y-0.5">
+                          交代
+                        </button>
+                      )}
                     </div>
                     )
                   })}
