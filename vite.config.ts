@@ -12,7 +12,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
         id: '/team-link/',
         name: 'TEAM LINK',
@@ -25,8 +25,9 @@ export default defineConfig({
         background_color: '#ffffff',
         theme_color: '#1d4ed8',
         icons: [
-          { src: '/team-link/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/team-link/pwa-512x512.png', sizes: '512x512', type: 'image/png' }
+          { src: '/team-link/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/team-link/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/team-link/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {
