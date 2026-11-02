@@ -962,10 +962,8 @@ function App() {
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-900 sm:px-8">
       <div className="mx-auto max-w-5xl">
-        <header className="mb-8">
+        <header className="mb-3">
           <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">バスケットボール管理</h1>
-          <p className="mt-2 text-slate-600">チームと試合の情報を管理します。</p>
         </header>
 
         {page !== 'game-detail' && page !== 'game-record' && (
@@ -1159,9 +1157,9 @@ function App() {
 
         {page === 'games' && (
           <>
-            <section className="mb-8 rounded-2xl bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-bold">新しい試合を作成</h2>
-              <p className="mt-1 text-sm text-slate-500">対戦チームとユニフォームを設定します。</p>
+            <section className="mb-5 rounded-2xl bg-white p-4 shadow-sm">
+              <h2 className="text-lg font-bold">新しい試合を作成</h2>
+              <p className="mt-0.5 text-xs text-slate-500">対戦チームとユニフォームを設定します。</p>
               {teams.length < 2 ? (
                 <div className="mt-4 rounded-xl bg-amber-50 p-4 text-amber-900">
                   試合を作成するには、先に「チーム管理」で2チーム以上作成してください。
@@ -1170,21 +1168,23 @@ function App() {
                   </button>
                 </div>
               ) : (
-                <div className="mt-5 space-y-5">
-                  <label className="block">
-                    <span className="mb-2 block text-sm font-semibold">試合名（任意）</span>
-                    <input
+                <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-10 gap-3">
+                    <label className="col-span-7 block min-w-0">
+                      <span className="mb-1 block text-sm font-semibold">試合名（任意）</span>
+                      <input
                       value={gameName}
                       onChange={(event) => setGameName(event.target.value)}
                       maxLength={100}
                       placeholder="例：練習試合 10/18"
-                      className="w-full rounded-xl border border-slate-300 px-4 py-3"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-2 block text-sm font-semibold">試合日</span>
-                    <input type="date" required value={gameDate} onChange={(event) => setGameDate(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3" />
-                  </label>
+                      className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2"
+                      />
+                    </label>
+                    <label className="col-span-3 block min-w-0">
+                      <span className="mb-1 block text-sm font-semibold">試合日</span>
+                      <input type="date" required value={gameDate} onChange={(event) => setGameDate(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm" />
+                    </label>
+                  </div>
                   <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                     <label className="block">
                       <span className="mb-2 block font-semibold">ホームチーム</span>
@@ -1280,11 +1280,9 @@ function App() {
           const statsHome = game ? teams.find(team => team.id === game.homeTeamId) : undefined
           const statsAway = game ? teams.find(team => team.id === game.awayTeamId) : undefined
           return <section className="space-y-4">
-            <div className="rounded-2xl bg-white p-4 shadow-sm sm:p-6">
-              <h2 className="text-2xl font-bold">スタッツ管理</h2>
-              <h3 className="mt-4 text-lg font-bold">試合一覧</h3>
+            <div className="rounded-2xl bg-white p-3 shadow-sm sm:p-4">
               {statsGames.length === 0 ? <p className="mt-2 text-slate-500">まだ試合がありません。「試合管理」から試合を作成してください。</p> : <>
-                <div className="mt-3 flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <button type="button" aria-label="前の試合" disabled={index === 0} onClick={() => setStatsGameIndex(index - 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〈</button>
                   <div className="min-w-0 flex-1 text-center">
                     <p className="text-xs text-slate-500">{index + 1} / {statsGames.length} 試合</p>
@@ -1294,7 +1292,7 @@ function App() {
                   </div>
                   <button type="button" aria-label="次の試合" disabled={index >= statsGames.length - 1} onClick={() => setStatsGameIndex(index + 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〉</button>
                 </div>
-                <label className="mt-3 block text-sm font-semibold">試合を直接選択
+                <label className="mt-2 block text-sm font-semibold">試合を直接選択
                   <select value={index} onChange={e => setStatsGameIndex(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
                     {statsGames.map((item, i) => <option key={item.id} value={i}>{(item as DatedGame).gameDate ?? item.createdAt.slice(0,10)}　{item.name}</option>)}
                   </select>
@@ -1317,14 +1315,12 @@ function App() {
               </div>
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
-                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-2 py-1 sm:px-3">
-                  <span className="min-w-0 truncate text-sm font-bold">{game.name} · スタッツ管理</span>
-                  <button type="button" onClick={() => setStatsFullscreen(false)} className="shrink-0 rounded-lg border border-slate-400 px-3 py-1 text-sm font-bold">× 閉じる</button>
+                <div className="flex shrink-0 items-center justify-end border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
+                  <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
                   <div className="w-full bg-white">
-                    <div className="border-b border-slate-300 px-2 py-1 text-sm font-bold">スコア表示</div>
-                    <div className="w-full [&>section]:!h-full [&>section]:!min-w-0" style={{ height: 'calc(100dvh - 78px)' }}>
+                    <div className="w-full [&>section]:!h-full [&>section]:!min-w-0" style={{ height: 'calc(100dvh - 68px)' }}>
                       {renderOriginalSheet(game, statsHome, statsAway, true)}
                     </div>
                   </div>
