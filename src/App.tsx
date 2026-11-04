@@ -840,113 +840,68 @@ function App() {
     )
   }
 
-  // SVG foreignObject は Edge / Safari で画像化に失敗することがあるため、
-  // 表示中のスコア表を Canvas に直接描画する。外部ライブラリは不要。
-  async function shareScoreSheet(game: Game) {
+  // 表示中のスコアシートをそのままCanvasに描画し、PNGファイルとして共有する。
+  // HTMLの文字位置・罫線・背景を基準に描画するため、PDFへの再組版を行わない。
+  async function shareScoreSheetImage(game: Game) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
-    const source = candidates.find(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0)
-    if (!source) { setMessage('スコア表示を開いてから画像を共有してください。'); return }
+      .filter(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0)
+    // 全画面表示中は、プレビュー用の縮小版ではなく全画面のシートを優先する。
+    const source = candidates.find(el => el.closest('[aria-label="スタッツ管理 全画面"]'))
+      ?? candidates.find(el => el.classList.contains('fixed'))
+      ?? candidates[candidates.length - 1]
+    if (!source) { setMessage('スコア表示を開いてから画像共有してください。'); return }
+    setMessage('スコア表示の画像を作成しています...')
     try {
-      const sourceRect = source.getBoundingClientRect()
-      const width = Math.ceil(sourceRect.width)
-      const height = Math.ceil(sourceRect.height)
-      if (!width || !height) throw new Error('スコア表示のサイズを取得できません')
-      const scale = 2
-      const canvas = document.createElement('canvas')
-      canvas.width = width * scale
-      canvas.height = height * scale
-      const ctx = canvas.getContext('2d')
-      if (!ctx) throw new Error('Canvasを利用できません')
-      ctx.scale(scale, scale)
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, width, height)
-      ctx.beginPath()
-      ctx.rect(0, 0, width, height)
-      ctx.clip()
-
-      const paint = (element: Element) => {
-        const style = window.getComputedStyle(element)
-        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return
-        if (element.tagName === 'BUTTON') return // 戻る・共有ボタンは画像に含めない
-        const rect = element.getBoundingClientRect()
-        if (rect.width <= 0 || rect.height <= 0) return
-        const x = rect.left - sourceRect.left
-        const y = rect.top - sourceRect.top
-        if (x >= width || y >= height || x + rect.width <= 0 || y + rect.height <= 0) return
-        ctx.save()
-        const background = style.backgroundColor
-        if (background && background !== 'transparent' && background !== 'rgba(0, 0, 0, 0)') {
-          ctx.fillStyle = background
-          ctx.fillRect(x, y, rect.width, rect.height)
-        }
-        const borderSides = [
-          ['Top', x, y, x + rect.width, y],
-          ['Right', x + rect.width, y, x + rect.width, y + rect.height],
-          ['Bottom', x, y + rect.height, x + rect.width, y + rect.height],
-          ['Left', x, y, x, y + rect.height],
-        ] as const
-        for (const [side, x1, y1, x2, y2] of borderSides) {
-          const thickness = parseFloat(style.getPropertyValue(`border-${side.toLowerCase()}-width`)) || 0
-          const borderStyle = style.getPropertyValue(`border-${side.toLowerCase()}-style`)
-          if (!thickness || borderStyle === 'none') continue
-          ctx.strokeStyle = style.getPropertyValue(`border-${side.toLowerCase()}-color`) || '#94a3b8'
-          ctx.lineWidth = thickness
-          ctx.beginPath()
-          ctx.moveTo(x1, y1)
-          ctx.lineTo(x2, y2)
-          ctx.stroke()
-        }
-        // テーブル内の文字・数字・記号をDOM上の位置から描画する。
-        for (const node of Array.from(element.childNodes)) {
-          if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue
-          const text = node.textContent.trim()
-          const range = document.createRange()
-          range.selectNodeContents(node)
-          const textRect = range.getBoundingClientRect()
-          if (!textRect.width || !textRect.height) continue
-          const fontSize = parseFloat(style.fontSize) || 10
-          const fontWeight = style.fontWeight
-          const fontFamily = style.fontFamily || 'sans-serif'
-          ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`
-          ctx.fillStyle = style.color || '#000000'
-          ctx.textBaseline = 'alphabetic'
-          const tx = textRect.left - sourceRect.left
-          const ty = textRect.top - sourceRect.top + (textRect.height + fontSize * 0.76) / 2
-          ctx.fillText(text, tx, ty, Math.max(textRect.width + 2, 1))
-        }
-        if (style.overflow === 'hidden' || style.overflowX === 'hidden' || style.overflowY === 'hidden') {
-          ctx.beginPath()
-          ctx.rect(x, y, rect.width, rect.height)
-          ctx.clip()
-        }
-        for (const child of Array.from(element.children)) paint(child)
-        ctx.restore()
-      }
-      paint(source)
+      const { default: html2canvas } = await import('html2canvas-pro')
+      await document.fonts.ready
+      const width = Math.ceil(source.getBoundingClientRect().width)
+      const height = Math.ceil(source.getBoundingClientRect().height)
+      if (width < 100 || height < 100) throw new Error('スコア表示のサイズを取得できませんでした。')
+      const canvas = await html2canvas(source, {
+        backgroundColor: '#ffffff',
+        scale: Math.min(2, 3200 / Math.max(width, height)),
+        width,
+        height,
+        useCORS: true,
+        logging: false,
+        scrollX: 0,
+        scrollY: 0,
+        onclone: (doc) => {
+          // ボタンなどはシートの外にあるため画像に含まれない。
+          // スクリーンの印刷用CSSは適用せず、現在の見た目を維持する。
+          doc.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]').forEach(el => {
+            el.style.backgroundColor = '#ffffff'
+          })
+        },
+      })
       const blob = await new Promise<Blob>((resolve, reject) =>
-        canvas.toBlob(result => result ? resolve(result) : reject(new Error('PNGに変換できません')), 'image/png'))
-      const filename = `TEAM_LINK_${(game.name || 'score').replace(/[\\/:*?"<>|]/g, '_')}.png`
-      const file = new File([blob], filename, { type: 'image/png' })
-      if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+        canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNGの生成に失敗しました。')), 'image/png')
+      )
+      const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\\\/:*?"<>|]/g, '_')}_スコア表示.png`
+      const file = new File([blob], fileName, { type: 'image/png' })
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
         try {
-          await navigator.share({ files: [file], title: `${game.name} スコア表示` })
+          await navigator.share({ files: [file], title: `${game.name || '試合'} スコア表示` })
+          setMessage('共有メニューを開きました。')
           return
         } catch (error) {
-          if ((error as Error).name === 'AbortError') return
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            setMessage('共有をキャンセルしました。')
+            return
+          }
         }
       }
-      const downloadUrl = URL.createObjectURL(blob)
+      const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = downloadUrl
-      link.download = filename
+      link.href = url
+      link.download = fileName
       document.body.appendChild(link)
       link.click()
       link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000)
-      setMessage('スコア表示をPNG画像で保存しました。LINEに画像を添付して共有できます。')
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setMessage('画像を保存しました。LINEで写真として送信できます。')
     } catch (error) {
-      console.error('Score image export failed:', error)
-      setMessage(`画像の生成に失敗しました：${error instanceof Error ? error.message : '不明なエラー'}`)
+      setMessage(`画像の生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1465,7 +1420,7 @@ function App() {
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => void shareScoreSheet(game)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white">共有</button>
+                    <button type="button" onClick={() => shareScoreSheetImage(game)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white">スタッツを共有</button>
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
                   </div>
                 </div>
@@ -1480,7 +1435,7 @@ function App() {
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
-                  <button type="button" onClick={() => void shareScoreSheet(game)} className="rounded-xl bg-emerald-600 px-3 py-3 text-sm font-bold text-white">画像で共有・保存</button>
+                  <button type="button" onClick={() => shareScoreSheetImage(game)} className="rounded-xl bg-emerald-600 px-3 py-3 text-sm font-bold text-white">写真をLINEで共有</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -1834,7 +1789,7 @@ function App() {
               </>
                 )}
                 {recordView === 'original' && <>
-                  <div className="my-2 flex justify-end"><button type="button" onClick={() => void shareScoreSheet(selectedGame)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white">画像で共有・保存</button></div>
+                  <div className="my-2 flex justify-end"><button type="button" onClick={() => shareScoreSheetImage(selectedGame)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white">写真をLINEで共有</button></div>
                   {renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
                 </>}
               </>
