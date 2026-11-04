@@ -21,6 +21,7 @@ import {
 
 type Page = 'teams' | 'games' | 'stats' | 'backup' | 'game-detail' | 'game-record'
 type DatedGame = Game & { gameDate?: string }
+const formatGameDate = (date: string) => date.slice(0, 10).replace(/-/g, '/')
 const todayLocal = () => {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -71,8 +72,8 @@ function App() {
   const [games, setGames] = useState<Game[]>([])
   const [statsGameIndex, setStatsGameIndex] = useState(-1)
   const [statsFullscreen, setStatsFullscreen] = useState(false)
-  const [preparedPdf, setPreparedPdf] = useState<{ gameId: string; file: File } | null>(null)
   const [pdfPreparing, setPdfPreparing] = useState(false)
+  const [preparedPdf, setPreparedPdf] = useState<{ gameId: string; file: File } | null>(null)
   const statsSheetContainerRef = useRef<HTMLDivElement>(null)
   const [statsSheetWidth, setStatsSheetWidth] = useState(1000)
   useEffect(() => {
@@ -732,6 +733,146 @@ function App() {
     }
   }
 
+  // 1試合単位の持ち運び用バックアップ。既存の全件バックアップとは別形式。
+  async function handleExportSingleGame(gameId: string) {
+    try {
+      const [savedTeams, savedGames] = await Promise.all([getTeams(), getGames()])
+      const game = savedGames.find((item) => item.id === gameId)
+      if (!game) throw new Error('試合が見つかりません')
+      const relatedTeams = savedTeams.filter((team) => team.id === game.homeTeamId || team.id === game.awayTeamId)
+      if (relatedTeams.length !== 2) throw new Error('対戦チームの情報が不足しています')
+      const datePart = ((game as DatedGame).gameDate || game.createdAt.slice(0, 10)).replace(/\//g, '-')
+      const matchup = `${relatedTeams.find(t => t.id === game.homeTeamId)?.name ?? 'ホーム'}_VS_${relatedTeams.find(t => t.id === game.awayTeamId)?.name ?? 'アウェイ'}`
+      const safeName = `${datePart}_${matchup}_試合バックアップ`.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+      const payload = {
+        format: 'TEAM_LINK_SINGLE_GAME',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        teams: relatedTeams,
+        game,
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${safeName}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setMessage(`「${game.name}」の試合バックアップを保存しました。`)
+    } catch (error) {
+      console.error(error)
+      setMessage(error instanceof Error ? error.message : '試合バックアップを作成できませんでした。')
+    }
+  }
+
+  // 1試合だけを追加。既存の試合は上書きせず、チームと選手の参照関係を保つ。
+  async function handleImportSingleGame(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      if (file.size > 20 * 1024 * 1024) throw new Error('ファイルが大きすぎます（上限20MB）。')
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!parsed || typeof parsed !== 'object') throw new Error('JSONファイルを確認してください。')
+      const data = parsed as { format?: unknown; version?: unknown; teams?: unknown; game?: unknown }
+      if (data.format !== 'TEAM_LINK_SINGLE_GAME' || data.version !== 1 || !Array.isArray(data.teams) || data.teams.length !== 2 || !data.game || typeof data.game !== 'object') {
+        throw new Error('「この試合を保存」で作成したJSONファイルを選んでください。')
+      }
+      const incomingTeams = data.teams as Team[]
+      const incomingGame = data.game as Game
+      const validTeam = (team: Team) => team && typeof team.id === 'string' && !!team.id && typeof team.name === 'string' && Array.isArray(team.players) && team.players.every(player => player && typeof player.id === 'string' && typeof player.number === 'string' && typeof player.name === 'string')
+      if (!incomingTeams.every(validTeam) || incomingTeams[0].id === incomingTeams[1].id || typeof incomingGame.id !== 'string' || !incomingGame.id || typeof incomingGame.name !== 'string' || !Array.isArray(incomingGame.events) || typeof incomingGame.homeTeamId !== 'string' || typeof incomingGame.awayTeamId !== 'string' || incomingGame.homeTeamId === incomingGame.awayTeamId || !incomingTeams.some(team => team.id === incomingGame.homeTeamId) || !incomingTeams.some(team => team.id === incomingGame.awayTeamId) || !incomingGame.events.every(item => item && typeof item.id === 'string' && typeof item.teamId === 'string' && typeof item.type === 'string' && typeof item.quarter === 'number' && [incomingGame.homeTeamId, incomingGame.awayTeamId].includes(item.teamId))) {
+        throw new Error('試合または選手データの形式が正しくありません。')
+      }
+      const [currentTeams, currentGames] = await Promise.all([getTeams(), getGames()])
+      if (currentGames.some(game => game.id === incomingGame.id)) {
+        throw new Error('同じ試合IDがすでに保存されています。重複取り込みを防ぐため追加しませんでした。')
+      }
+      // チームIDが違っても同名なら既存チームへ統合する（前後の空白・全半角・大文字小文字を正規化）。
+      // 同名チームが複数ある場合は誤統合を避け、ユーザーに整理を依頼する。
+      const normalizeName = (name: string) => name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('ja-JP')
+      const teamIdMap = new Map<string, string>()
+      const playerIdMap = new Map<string, string>()
+      const teamsToSave: Team[] = []
+      let newTeamCount = 0
+      let mergedTeamCount = 0
+      let addedPlayerCount = 0
+      for (const team of incomingTeams) {
+        const byId = currentTeams.find(item => item.id === team.id)
+        const sameNames = currentTeams.filter(item => normalizeName(item.name) === normalizeName(team.name))
+        if (sameNames.length > 1 && !byId) {
+          throw new Error(`「${team.name}」と同名のチームが複数あります。取り込み前にチーム管理で整理してください。`)
+        }
+        // 同じIDで名前が違う場合はID衝突。既存のチームを上書きしない。
+        const existing = byId?.name === team.name ? byId : (sameNames.length === 1 ? sameNames[0] : undefined)
+        if (!existing) {
+          const newId = byId || currentTeams.some(item => item.id === team.id) || teamsToSave.some(item => item.id === team.id)
+            ? crypto.randomUUID() : team.id
+          teamIdMap.set(team.id, newId)
+          teamsToSave.push({ ...team, id: newId })
+          newTeamCount++
+          continue
+        }
+        teamIdMap.set(team.id, existing.id)
+        mergedTeamCount++
+        const mergedPlayers = [...existing.players]
+        for (const player of team.players) {
+          const byPlayerId = mergedPlayers.find(item => item.id === player.id)
+          // 端末間で選手IDが違う場合も、背番号と名前が一致すれば同じ選手として扱う。
+          const byIdentity = mergedPlayers.find(item => String(item.number) === String(player.number) && normalizeName(item.name) === normalizeName(player.name))
+          const matched = byIdentity ?? (byPlayerId && byPlayerId.name === player.name && byPlayerId.number === player.number ? byPlayerId : undefined)
+          if (matched) {
+            playerIdMap.set(`${team.id}:${player.id}`, matched.id)
+            continue
+          }
+          // 既存選手とIDだけが衝突する場合は新IDを付与。既存選手は変更しない。
+          const newPlayerId = byPlayerId ? crypto.randomUUID() : player.id
+          playerIdMap.set(`${team.id}:${player.id}`, newPlayerId)
+          mergedPlayers.push({ ...player, id: newPlayerId })
+          addedPlayerCount++
+        }
+        if (mergedPlayers.length !== existing.players.length) teamsToSave.push({ ...existing, players: mergedPlayers })
+      }
+      if (teamIdMap.get(incomingGame.homeTeamId) === teamIdMap.get(incomingGame.awayTeamId)) {
+        throw new Error('対戦する2チームが同じチームに統合されてしまいます。チーム名を確認してください。')
+      }
+      const remapPlayer = (teamId: string, playerId: string) => playerIdMap.get(`${teamId}:${playerId}`) ?? playerId
+      const remapLineup = (teamId: string, lineup?: string[]) => lineup?.map(id => remapPlayer(teamId, id))
+      const quarterLineups = (incomingGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups
+      const remappedQuarters = quarterLineups ? Object.fromEntries(Object.entries(quarterLineups).map(([quarter, lineup]) => [quarter, {
+        home: remapLineup(incomingGame.homeTeamId, lineup.home) ?? [],
+        away: remapLineup(incomingGame.awayTeamId, lineup.away) ?? [],
+      }])) : undefined
+      const remappedGame = {
+        ...incomingGame,
+        homeTeamId: teamIdMap.get(incomingGame.homeTeamId)!,
+        awayTeamId: teamIdMap.get(incomingGame.awayTeamId)!,
+        homeLineup: remapLineup(incomingGame.homeTeamId, incomingGame.homeLineup),
+        awayLineup: remapLineup(incomingGame.awayTeamId, incomingGame.awayLineup),
+        ...(remappedQuarters ? { quarterLineups: remappedQuarters } : {}),
+        events: incomingGame.events.map(item => ({
+          ...item,
+          teamId: teamIdMap.get(item.teamId) ?? item.teamId,
+          ...(item.playerId ? { playerId: remapPlayer(item.teamId, item.playerId) } : {}),
+          ...(item.relatedPlayerId ? { relatedPlayerId: remapPlayer(item.teamId, item.relatedPlayerId) } : {}),
+        })),
+      }
+      if (!window.confirm(`次の試合をこの端末へ追加しますか？\n\n${incomingGame.name}\n試合ID：${incomingGame.id}\n\n既存の試合データは削除・上書きしません。新規チーム：${newTeamCount}件\n既存チームへ統合：${mergedTeamCount}件\n追加選手：${addedPlayerCount}人\n\n必要な情報だけ追加し、既存チーム・試合は削除しません。`)) return
+      setSaving(true)
+      for (const team of teamsToSave) await saveTeam(team)
+      await saveGame(remappedGame)
+      await refreshData()
+      setMessage(`「${incomingGame.name}」を1試合追加しました。新規チーム${newTeamCount}件・追加選手${addedPlayerCount}人。既存の試合はそのままです。`)
+    } catch (error) {
+      console.error(error)
+      setMessage(error instanceof Error ? error.message : '試合データを取り込めませんでした。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function handleImportBackup(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -842,66 +983,21 @@ function App() {
     )
   }
 
-  // スコア表示のDOMを、画面の縮小率やスマホ幅に依存しない独立した印刷画面へ複製する。
-  // PDFの生成・保存はブラウザ標準の「印刷 → PDFに保存」で行う。
-  function printScoreSheet(gameId: string) {
-    const sheets = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
-    const source = sheets.find(el => el.dataset.gameId === gameId && el.closest('[role="dialog"]'))
-      ?? sheets.find(el => el.dataset.gameId === gameId && el.getBoundingClientRect().width > 0)
-    if (!source) {
-      window.alert('印刷するスコア表示が見つかりません。')
-      return
-    }
-
-    // ユーザーのクリック直後に開き、スマホのポップアップブロックを避ける。
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) {
-      window.alert('印刷画面を開けませんでした。ブラウザのポップアップを許可してください。')
-      return
-    }
-
-    const styles = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
-      .map(link => `<link rel="stylesheet" href="${link.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`)
-      .join('\n')
-    const inlineStyles = Array.from(document.querySelectorAll<HTMLStyleElement>('style'))
-      .map(style => style.outerHTML).join('\n')
-    const clone = source.cloneNode(true) as HTMLElement
-    clone.classList.remove('fixed', 'inset-0', 'z-50', 'h-[100dvh]', 'w-screen')
-    clone.style.setProperty('position', 'relative', 'important')
-    clone.style.setProperty('inset', 'auto', 'important')
-    clone.style.setProperty('width', '1000px', 'important')
-    clone.style.setProperty('min-width', '1000px', 'important')
-    clone.style.setProperty('height', '900px', 'important')
-    clone.style.setProperty('max-height', 'none', 'important')
-    clone.style.setProperty('transform', 'none', 'important')
-    clone.style.setProperty('overflow', 'hidden', 'important')
-    clone.querySelectorAll('button').forEach(button => button.remove())
-    const html = `<!doctype html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TEAM LINK スコア表示</title>${styles}${inlineStyles}
-<style>
-@page { size: A3 landscape; margin: 8mm; }
-html,body { margin:0!important; padding:0!important; background:#fff!important; }
-body { display:flex; justify-content:center; align-items:flex-start; }
-[data-teamlink-score-sheet] { box-sizing:border-box!important; flex:none!important; width:1000px!important; min-width:1000px!important; height:900px!important; position:relative!important; inset:auto!important; transform:none!important; overflow:hidden!important; background:white!important; }
-@media print { html,body { width:100%!important; height:auto!important; -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; } [data-teamlink-score-sheet] { break-inside:avoid; page-break-inside:avoid; } }
-</style></head><body>${clone.outerHTML}<script>
-window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.ready)await document.fonts.ready;}catch(e){} setTimeout(()=>{window.focus();window.print();},300);});
-<\/script></body></html>`
-    printWindow.document.open()
-    printWindow.document.write(html)
-    printWindow.document.close()
-  }
-
   // スコア表示をブラウザで実際に描画した画像としてPDFに埋め込む。
   // 旧方式（DOMの背景色・罫線・文字をpdf-libで再描画）はCSSを再現できず、
   // 黒塗りや罫線消失を起こしたため使用しない。
-  async function shareScoreSheetPdf(game: Game) {
+  async function shareScoreSheetPdf(game: Game, prepareOnly = false) {
+    // 準備済みPDFがあれば、共有ボタンは即座に共有シートを開く。
+    if (!prepareOnly && preparedPdf?.gameId === game.id) {
+      await sharePdfFile(preparedPdf.file)
+      return
+    }
     const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
     const source = candidates.find(el => el.dataset.gameId === game.id && el.closest('[role="dialog"]'))
       ?? candidates.find(el => el.dataset.gameId === game.id && el.getBoundingClientRect().width > 0)
     if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
-    setPreparedPdf(null)
     setPdfPreparing(true)
-    setMessage('PDFを生成しています...')
+    setMessage(prepareOnly ? 'PDFを準備しています...' : 'PDFを生成しています...')
     let staging: HTMLDivElement | null = null
     try {
       const [{ PDFDocument }, { default: html2canvas }] = await Promise.all([
@@ -1005,10 +1101,19 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
       const image = await pdf.embedPng(pngBytes)
       page.drawImage(image, { x: 0, y: 0, width: captureWidth, height: captureHeight })
       const bytes = await pdf.save()
-      const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
+      // ファイル名：試合日_ホームチーム名 VS アウェイチーム名_ボックススコア.pdf
+      // ファイル名に使用できない文字（特に日付の / ）は置き換える。
+      const safeFilePart = (value: string) => value.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || '名称未設定'
+      const datePart = formatGameDate((game as DatedGame).gameDate ?? game.createdAt).replace(/\//g, '-')
+      const opponentPart = `${teamLabel(game.homeTeamId)} VS ${teamLabel(game.awayTeamId)}`
+      const fileName = `${safeFilePart(datePart)}_${safeFilePart(opponentPart)}_ボックススコア.pdf`
       const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
       setPreparedPdf({ gameId: game.id, file })
-      setMessage('PDFを準備しました。PDF保存で表示を確認してから「LINEへ共有」を押してください。')
+      if (prepareOnly) {
+        setMessage('PDFを準備しました。「共有」または「PDF保存」を選んでください。')
+      } else {
+        await sharePdfFile(file)
+      }
     } catch (error) {
       setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -1017,28 +1122,28 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     }
   }
 
-  // 共有はタップ直後に呼ぶ（PDF生成などのawaitを挟まない）。
-  function sharePreparedPdf(gameId: string) {
-    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
-    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
-    if (!navigator.share || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
-      setMessage('このブラウザはPDFファイルの共有に対応していません。「PDF保存」からLINEに添付してください。')
-      return
-    }
-    navigator.share({ files: [file], title: file.name }).then(() => {
-      setMessage('共有操作が完了しました。LINEに送信できたかご確認ください。')
-    }).catch((error: unknown) => {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setMessage('共有がキャンセルされたか、LINE側で受け取れませんでした。「PDF保存」からLINEに添付してください。')
-      } else {
-        setMessage(`共有できませんでした。「PDF保存」からLINEに添付してください。${error instanceof Error ? ` (${error.message})` : ''}`)
+  // ユーザーが「共有」を押したタイミングで直接共有シートを開く。
+  async function sharePdfFile(file: File) {
+    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+      try {
+        await navigator.share({ files: [file], title: file.name })
+        setMessage('共有操作が完了しました。LINEへの送信結果をご確認ください。')
+      } catch (shareError) {
+        if (shareError instanceof DOMException && shareError.name === 'AbortError') {
+          setMessage('共有がキャンセルされました。')
+        } else {
+          savePdfFile(file)
+          setMessage('共有シートを開けなかったためPDFを保存しました。LINEから添付してください。')
+        }
       }
-    })
+    } else {
+      savePdfFile(file)
+      setMessage('この端末ではPDFの直接共有に対応していないため、PDFを保存しました。LINEから添付してください。')
+    }
   }
 
-  function downloadPreparedPdf(gameId: string) {
-    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
-    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
+  // Web Share API非対応時のみPDFを端末に保存する。
+  function savePdfFile(file: File) {
     const url = URL.createObjectURL(file)
     const link = document.createElement('a')
     link.href = url
@@ -1047,9 +1152,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     link.click()
     link.remove()
     setTimeout(() => URL.revokeObjectURL(url), 60000)
-    setMessage('PDFを保存しました。LINEのトーク画面で「＋」→「ファイル」から添付してください。')
   }
-
 
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
@@ -1273,6 +1376,40 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
               </label>
             </div>
             <p className="mt-3 text-xs leading-relaxed text-amber-800">復元前に現在のチーム・試合データを端末内へ自動退避します。端末の故障やブラウザデータ消去には備えられないため、重要な記録は「バックアップを保存」でファイルにも保存してください。</p>
+          </section>
+        )}
+
+        {page === 'backup' && (
+          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <h2 className="text-lg font-bold">試合ごとのバックアップ</h2>
+            <p className="mt-1 text-sm text-slate-600">試合を1件選び、試合記録・対戦する両チーム・選手名簿をまとめてJSON保存します。取り込み時は既存チームと照合して差分のみ追加します。</p>
+            {games.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-500">バックアップできる試合がありません。</p>
+            ) : (
+              <div className="mt-4 max-h-80 space-y-2 overflow-y-auto">
+                {games.map((game) => (
+                  <div key={game.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-slate-500">{formatGameDate((game as DatedGame).gameDate || game.createdAt)}</p>
+                      <p className="font-bold">{game.name}</p>
+                      <p className="text-sm text-slate-600">{teamLabel(game.homeTeamId)} VS {teamLabel(game.awayTeamId)}</p>
+                    </div>
+                    <button type="button" disabled={saving} onClick={() => void handleExportSingleGame(game.id)} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
+                      この試合を保存
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <h3 className="font-bold text-emerald-900">別端末から1試合を取り込む</h3>
+              <p className="mt-1 text-sm text-emerald-900">別のタブレットで「この試合を保存」したJSONファイルを選択してください。既存の試合は消さずに追加します。</p>
+              <label className="mt-3 inline-flex cursor-pointer items-center justify-center rounded-xl bg-emerald-700 px-5 py-3 font-bold text-white hover:bg-emerald-800">
+                1試合を取り込む
+                <input type="file" accept=".json,application/json" disabled={saving} onChange={(event) => void handleImportSingleGame(event)} className="sr-only" />
+              </label>
+              <p className="mt-2 text-xs text-emerald-900">同じ試合IDがある場合は追加を中止します。全件復元とは異なり、既存の試合を置き換えません。</p>
+            </div>
           </section>
         )}
 
@@ -1546,15 +1683,14 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                   <button type="button" aria-label="前の試合" disabled={index === 0} onClick={() => setStatsGameIndex(index - 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〈</button>
                   <div className="min-w-0 flex-1 text-center">
                     <p className="text-xs text-slate-500">{index + 1} / {statsGames.length} 試合</p>
-                    <p className="truncate text-lg font-black">{game.name}</p>
-                    <p className="text-sm text-slate-600">{teamLabel(game.homeTeamId)} VS {teamLabel(game.awayTeamId)}</p>
-                    <p className="text-xs text-slate-500">{(game as DatedGame).gameDate ?? game.createdAt.slice(0,10)}</p>
+                    <p className="truncate text-sm font-normal text-slate-400">{formatGameDate((game as DatedGame).gameDate ?? game.createdAt)}　{game.name}</p>
+                    <p className="text-lg font-black leading-snug text-slate-900 sm:text-xl">{teamLabel(game.homeTeamId)} VS {teamLabel(game.awayTeamId)}</p>
                   </div>
                   <button type="button" aria-label="次の試合" disabled={index >= statsGames.length - 1} onClick={() => setStatsGameIndex(index + 1)} className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-2xl font-black disabled:opacity-30">〉</button>
                 </div>
                 <label className="mt-2 block text-sm font-semibold">試合を直接選択
                   <select value={index} onChange={e => setStatsGameIndex(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
-                    {statsGames.map((item, i) => <option key={item.id} value={i}>{(item as DatedGame).gameDate ?? item.createdAt.slice(0,10)}　{item.name}</option>)}
+                    {statsGames.map((item, i) => <option key={item.id} value={i}>{formatGameDate((item as DatedGame).gameDate ?? item.createdAt)}　{item.name}</option>)}
                   </select>
                 </label>
               </>}
@@ -1565,12 +1701,11 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
-                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
+                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game, true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? '準備中…' : '① PDFを準備'}</button>
                     {preparedPdf?.gameId === game.id && <>
-                      <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white">② LINEへ共有</button>
-                      <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-lg border border-slate-400 bg-white px-3 py-2 text-sm font-bold text-slate-900">PDF保存</button>
+                      <button type="button" disabled={pdfPreparing} onClick={() => sharePdfFile(preparedPdf.file)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">共有</button>
+                      <button type="button" disabled={pdfPreparing} onClick={() => savePdfFile(preparedPdf.file)} className="rounded-lg bg-red-600 px-3 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50">PDF保存</button>
                     </>}
-                    <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white">印刷・PDF保存</button>
                   </div>
                 </div>
                 <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
@@ -1584,12 +1719,11 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
-                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-blue-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
+                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game, true)} className="rounded-xl bg-blue-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? '準備中…' : '① PDFを準備'}</button>
                   {preparedPdf?.gameId === game.id && <>
-                    <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm">② LINEへ共有</button>
-                    <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-xl border border-slate-400 bg-white px-4 py-3 text-base font-bold">PDF保存</button>
+                    <button type="button" disabled={pdfPreparing} onClick={() => sharePdfFile(preparedPdf.file)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">共有</button>
+                    <button type="button" disabled={pdfPreparing} onClick={() => savePdfFile(preparedPdf.file)} className="rounded-xl bg-red-600 px-4 py-3 text-base font-bold text-white shadow-sm hover:bg-red-700 disabled:opacity-50">PDF保存</button>
                   </>}
-                  <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-xl bg-emerald-700 px-4 py-3 text-base font-bold text-white shadow-sm">印刷・PDF保存</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
