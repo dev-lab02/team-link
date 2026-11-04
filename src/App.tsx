@@ -39,6 +39,15 @@ const sortPlayersForSelection = <T extends { number: string | number }>(players:
   return [...players].sort((a, b) => rank(a.number) - rank(b.number))
 }
 
+// 当該クォーターのチームファウルを最大4マスで表示する。
+function TeamFoulIndicator({ count }: { count: number }) {
+  const danger = count >= 5
+  return <span className={`inline-flex items-center gap-1 whitespace-nowrap font-black ${danger ? 'text-red-500' : 'text-yellow-300'}`} aria-label={`チームファウル${count}回${count >= 4 ? ' ボーナス' : ''}`}>
+    <span className="tracking-[2px]">{'■'.repeat(Math.min(4, count))}</span>
+    {count >= 4 && <span>BONUS</span>}
+  </span>
+}
+
 // 延長戦に進んだ場合のみ、該当する延長クォーターを表示する
 const visibleQuarters = (game: Game): number[] => {
   const lastQuarter = Math.min(6, Math.max(4, game.currentQuarter, ...game.events.filter(e => !e.cancelled).map(e => e.quarter)))
@@ -831,6 +840,116 @@ function App() {
     )
   }
 
+  // SVG foreignObject は Edge / Safari で画像化に失敗することがあるため、
+  // 表示中のスコア表を Canvas に直接描画する。外部ライブラリは不要。
+  async function shareScoreSheet(game: Game) {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
+    const source = candidates.find(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0)
+    if (!source) { setMessage('スコア表示を開いてから画像を共有してください。'); return }
+    try {
+      const sourceRect = source.getBoundingClientRect()
+      const width = Math.ceil(sourceRect.width)
+      const height = Math.ceil(sourceRect.height)
+      if (!width || !height) throw new Error('スコア表示のサイズを取得できません')
+      const scale = 2
+      const canvas = document.createElement('canvas')
+      canvas.width = width * scale
+      canvas.height = height * scale
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvasを利用できません')
+      ctx.scale(scale, scale)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
+      ctx.beginPath()
+      ctx.rect(0, 0, width, height)
+      ctx.clip()
+
+      const paint = (element: Element) => {
+        const style = window.getComputedStyle(element)
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return
+        if (element.tagName === 'BUTTON') return // 戻る・共有ボタンは画像に含めない
+        const rect = element.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return
+        const x = rect.left - sourceRect.left
+        const y = rect.top - sourceRect.top
+        if (x >= width || y >= height || x + rect.width <= 0 || y + rect.height <= 0) return
+        ctx.save()
+        const background = style.backgroundColor
+        if (background && background !== 'transparent' && background !== 'rgba(0, 0, 0, 0)') {
+          ctx.fillStyle = background
+          ctx.fillRect(x, y, rect.width, rect.height)
+        }
+        const borderSides = [
+          ['Top', x, y, x + rect.width, y],
+          ['Right', x + rect.width, y, x + rect.width, y + rect.height],
+          ['Bottom', x, y + rect.height, x + rect.width, y + rect.height],
+          ['Left', x, y, x, y + rect.height],
+        ] as const
+        for (const [side, x1, y1, x2, y2] of borderSides) {
+          const thickness = parseFloat(style.getPropertyValue(`border-${side.toLowerCase()}-width`)) || 0
+          const borderStyle = style.getPropertyValue(`border-${side.toLowerCase()}-style`)
+          if (!thickness || borderStyle === 'none') continue
+          ctx.strokeStyle = style.getPropertyValue(`border-${side.toLowerCase()}-color`) || '#94a3b8'
+          ctx.lineWidth = thickness
+          ctx.beginPath()
+          ctx.moveTo(x1, y1)
+          ctx.lineTo(x2, y2)
+          ctx.stroke()
+        }
+        // テーブル内の文字・数字・記号をDOM上の位置から描画する。
+        for (const node of Array.from(element.childNodes)) {
+          if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue
+          const text = node.textContent.trim()
+          const range = document.createRange()
+          range.selectNodeContents(node)
+          const textRect = range.getBoundingClientRect()
+          if (!textRect.width || !textRect.height) continue
+          const fontSize = parseFloat(style.fontSize) || 10
+          const fontWeight = style.fontWeight
+          const fontFamily = style.fontFamily || 'sans-serif'
+          ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`
+          ctx.fillStyle = style.color || '#000000'
+          ctx.textBaseline = 'alphabetic'
+          const tx = textRect.left - sourceRect.left
+          const ty = textRect.top - sourceRect.top + (textRect.height + fontSize * 0.76) / 2
+          ctx.fillText(text, tx, ty, Math.max(textRect.width + 2, 1))
+        }
+        if (style.overflow === 'hidden' || style.overflowX === 'hidden' || style.overflowY === 'hidden') {
+          ctx.beginPath()
+          ctx.rect(x, y, rect.width, rect.height)
+          ctx.clip()
+        }
+        for (const child of Array.from(element.children)) paint(child)
+        ctx.restore()
+      }
+      paint(source)
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(result => result ? resolve(result) : reject(new Error('PNGに変換できません')), 'image/png'))
+      const filename = `TEAM_LINK_${(game.name || 'score').replace(/[\\/:*?"<>|]/g, '_')}.png`
+      const file = new File([blob], filename, { type: 'image/png' })
+      if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+        try {
+          await navigator.share({ files: [file], title: `${game.name} スコア表示` })
+          return
+        } catch (error) {
+          if ((error as Error).name === 'AbortError') return
+        }
+      }
+      const downloadUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000)
+      setMessage('スコア表示をPNG画像で保存しました。LINEに画像を添付して共有できます。')
+    } catch (error) {
+      console.error('Score image export failed:', error)
+      setMessage(`画像の生成に失敗しました：${error instanceof Error ? error.message : '不明なエラー'}`)
+    }
+  }
+
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
                   const activeEvents = game.events
@@ -884,7 +1003,7 @@ function App() {
                     })
                     return grid
                   }
-                  return <section className={embedded ? "relative flex h-[900px] min-w-[1000px] flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2" : "fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2"}>
+                  return <section data-teamlink-score-sheet="true" data-game-id={game.id} className={embedded ? "relative flex h-[900px] min-w-[1000px] flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2" : "fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden bg-white p-1 !text-black [&_*]:!text-black sm:p-2"}>
                     <div className="mb-1 flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 pb-1">
                       <div className="min-w-0 w-[50%] shrink-0 text-center">
                         <h3 className="truncate text-sm font-black">{game.name}</h3>
@@ -1345,7 +1464,10 @@ function App() {
               <div className="rounded-2xl bg-white p-3 shadow-sm">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-lg font-bold">スコア表示</h3>
-                  <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void shareScoreSheet(game)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white">共有</button>
+                    <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
+                  </div>
                 </div>
                 <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
                   <div style={{ height: `${900 * statsSheetScale}px`, width: '100%', position: 'relative' }}>
@@ -1357,7 +1479,8 @@ function App() {
               </div>
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
-                <div className="flex shrink-0 items-center justify-end border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
+                <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
+                  <button type="button" onClick={() => void shareScoreSheet(game)} className="rounded-xl bg-emerald-600 px-3 py-3 text-sm font-bold text-white">画像で共有・保存</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -1530,11 +1653,11 @@ function App() {
                   <>
                 <div className="sticky top-0 z-20 mt-2 grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_minmax(0,1fr)_auto] items-center gap-2 rounded-xl bg-slate-900 p-1.5 text-white shadow-md">
                   <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(homeTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>HOME</button>
-                  <div className="min-w-0 text-center"><p className="truncate text-center text-sm font-bold text-slate-200">{homeTeam.name}</p><div className="mt-1 flex items-center justify-center gap-2 text-[10px]"><span className={`font-black text-amber-300 ${selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= 4 ? '' : 'invisible'}`}>BONUS</span><span className="whitespace-nowrap text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
+                  <div className="min-w-0 text-center"><p className="truncate text-center text-sm font-bold text-slate-200">{homeTeam.name}</p><div className="mt-1 flex items-center justify-center gap-2 text-[10px]"><TeamFoulIndicator count={selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length} /><span className="whitespace-nowrap text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
                   <p className="px-1 text-3xl font-black tabular-nums">{selectedGame.events.filter(e => !e.cancelled && e.teamId === homeTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p>
                   <div className="px-1 text-center"><p className="whitespace-nowrap text-xs font-bold text-slate-300">＜{quarterLabel(selectedGame.currentQuarter)}＞</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-0.5 whitespace-nowrap rounded-md bg-white px-2 py-1 text-[11px] font-black text-slate-900">次のQ⇒</button>}</div>
                   <p className="px-1 text-3xl font-black tabular-nums">{selectedGame.events.filter(e => !e.cancelled && e.teamId === awayTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p>
-                  <div className="min-w-0 text-center"><p className="truncate text-center text-sm font-bold text-slate-200">{awayTeam.name}</p><div className="mt-1 flex items-center justify-center gap-2 text-[10px]"><span className={`font-black text-amber-300 ${selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length >= 4 ? '' : 'invisible'}`}>BONUS</span><span className="whitespace-nowrap text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
+                  <div className="min-w-0 text-center"><p className="truncate text-center text-sm font-bold text-slate-200">{awayTeam.name}</p><div className="mt-1 flex items-center justify-center gap-2 text-[10px]"><TeamFoulIndicator count={selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length} /><span className="whitespace-nowrap text-slate-300">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
                   <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(awayTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>AWAY</button>
                 </div>
                 {selectedGame.status === 'completed' && <p className="mt-5 rounded-xl bg-slate-100 p-3 font-semibold text-slate-700">この試合は終了済みです。以下は保存された記録の閲覧専用です。</p>}
@@ -1710,7 +1833,10 @@ function App() {
                 {renderBoxScore(selectedGame, homeTeam, awayTeam)}
               </>
                 )}
-                {recordView === 'original' && renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
+                {recordView === 'original' && <>
+                  <div className="my-2 flex justify-end"><button type="button" onClick={() => void shareScoreSheet(selectedGame)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white">画像で共有・保存</button></div>
+                  {renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
+                </>}
               </>
             )}
           </section>
