@@ -889,6 +889,110 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     printWindow.document.close()
   }
 
+  async function shareScoreSheetPdf(game: Game) {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
+    const source = candidates.filter(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0).sort((a, b) => Number(b.classList.contains('fixed')) - Number(a.classList.contains('fixed')))[0]
+    if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
+    setMessage('PDFを生成しています...')
+    try {
+      const [{ PDFDocument, rgb }, fontkit] = await Promise.all([import('pdf-lib'), import('@pdf-lib/fontkit')])
+      const response = await fetch(`${import.meta.env.BASE_URL}fonts/NotoSansCJK-Regular.otf`)
+      if (!response.ok) throw new Error('日本語フォントが見つかりません。public/fonts にフォントを配置してください。')
+      const fontBytes = await response.arrayBuffer()
+      const pdf = await PDFDocument.create()
+      pdf.registerFontkit(fontkit.default)
+      const font = await pdf.embedFont(fontBytes, { subset: true })
+      // A3横向き。画面のスコア表全体を1ページに収める。
+      const page = pdf.addPage([1190.55, 841.89])
+      const rect = source.getBoundingClientRect()
+      const margin = 22
+      const scale = Math.min((page.getWidth() - margin * 2) / rect.width, (page.getHeight() - margin * 2) / rect.height)
+      const offsetX = (page.getWidth() - rect.width * scale) / 2
+      const offsetY = (page.getHeight() - rect.height * scale) / 2
+      const color = (value: string) => {
+        const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
+        return m ? rgb(Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255) : rgb(0, 0, 0)
+      }
+      const x = (px: number) => offsetX + (px - rect.left) * scale
+      const y = (px: number) => page.getHeight() - offsetY - (px - rect.top) * scale
+      const inside = (r: DOMRect) => r.width > 0 && r.height > 0 && r.right > rect.left && r.left < rect.right && r.bottom > rect.top && r.top < rect.bottom
+      // 背景と罫線を先に描画。文字は最後に描画して視認性を保つ。
+      const elements = [source, ...Array.from(source.querySelectorAll<HTMLElement>('*'))]
+      for (const element of elements) {
+        const r = element.getBoundingClientRect()
+        if (!inside(r)) continue
+        const style = getComputedStyle(element)
+        const bg = style.backgroundColor
+        if (bg !== 'transparent' && !/^rgba\([^)]*,\s*0\s*\)$/.test(bg) && bg !== 'rgba(0, 0, 0, 0)') {
+          page.drawRectangle({ x: x(r.left), y: y(r.bottom), width: r.width * scale, height: r.height * scale, color: color(bg) })
+        }
+        const sides = [
+          ['Top', r.left, r.top, r.right, r.top],
+          ['Bottom', r.left, r.bottom, r.right, r.bottom],
+          ['Left', r.left, r.top, r.left, r.bottom],
+          ['Right', r.right, r.top, r.right, r.bottom],
+        ] as const
+        for (const [side, x1, y1, x2, y2] of sides) {
+          const width = parseFloat(style[`border${side}Width` as keyof CSSStyleDeclaration] as string) || 0
+          const lineStyle = style[`border${side}Style` as keyof CSSStyleDeclaration] as string
+          if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden') {
+            page.drawLine({ start: { x: x(x1), y: y(y1) }, end: { x: x(x2), y: y(y2) }, thickness: Math.max(.25, width * scale), color: color(style[`border${side}Color` as keyof CSSStyleDeclaration] as string) })
+          }
+        }
+      }
+      const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const parent = node.parentElement
+        const text = node.textContent?.replace(/\s+/g, ' ').trim()
+        if (!parent || !text) continue
+        const style = getComputedStyle(parent)
+        if (style.visibility === 'hidden' || style.display === 'none') continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        const bounds = range.getBoundingClientRect()
+        if (!inside(bounds)) continue
+        const size = Math.max(3.5, Math.min(22, parseFloat(style.fontSize) * scale * .83))
+        // 行内文字を矩形の中心線に合わせて配置。文字幅が広い場合は縮小。
+        let textWidth = 0
+        try { textWidth = font.widthOfTextAtSize(text, size) } catch { continue }
+        const allowed = Math.max(2, bounds.width * scale)
+        const fontSize = textWidth > allowed ? Math.max(2.5, size * allowed / textWidth) : size
+        let textX = x(bounds.left)
+        if (style.textAlign === 'center') textX += Math.max(0, (allowed - font.widthOfTextAtSize(text, fontSize)) / 2)
+        else if (style.textAlign === 'right' || style.textAlign === 'end') textX += Math.max(0, allowed - font.widthOfTextAtSize(text, fontSize))
+        try {
+          page.drawText(text, { x: textX, y: y(bounds.bottom) + (bounds.height * scale - fontSize) * .23, size: fontSize, font, color: color(style.color), maxWidth: allowed })
+        } catch { /* 未収録の記号はスキップしてPDF全体の生成を継続 */ }
+      }
+      const bytes = await pdf.save()
+      const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
+      const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: `${game.name || '試合'} スコア表示` })
+          setMessage('共有メニューを開きました。LINEを選んで送信してください。')
+          return
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') { setMessage('共有をキャンセルしました。'); return }
+        }
+      }
+      // ファイル共有に非対応のブラウザではPDFダウンロードに切り替える。
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setMessage('このブラウザはPDFの直接共有に対応していないため、PDFを保存しました。LINEのファイル添付から送信できます。')
+    } catch (error) {
+      setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
                   const activeEvents = game.events
@@ -901,8 +1005,6 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                   const pointsOf = (event: typeof activeEvents[number]) => event.points ?? (event.type === 'freeThrow' ? 1 : 0)
                   const scoreFor = (teamId: string) => scoringEvents.filter(event => event.teamId === teamId).reduce((sum, event) => sum + pointsOf(event), 0)
                   const eventSymbol = (event: typeof activeEvents[number]) => {
-                    if (event.type === 'offensiveRebound') return 'O'
-                    if (event.type === 'defensiveRebound') return 'D'
                     if (event.type === 'shot' && !event.made) return pointsOf(event) === 3 ? '〇' : '/'
                     if (event.type === 'shot' && event.made) return pointsOf(event) === 3 ? '③' : '☓'
                     if (event.type === 'freeThrow') {
@@ -975,8 +1077,8 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                               <col style={{ width: '8%' }} />
                               {visibleQuarters(game).map(q => <col key={`attendance-${q}`} style={{ width: `${8 / visibleQuarters(game).length}%` }} />)}
                               <col style={{ width: '8%' }} />
-                              {visibleQuarters(game).map(q => <col key={`score-${q}`} style={{ width: `${52 / visibleQuarters(game).length}%` }} />)}
-                              {[1, 2, 3, 4, 5].map(i => <col key={`summary-${i}`} style={{ width: '4%' }} />)}
+                              {visibleQuarters(game).map(q => <col key={`score-${q}`} style={{ width: `${60 / visibleQuarters(game).length}%` }} />)}
+                              {[1, 2, 3].map(i => <col key={`summary-${i}`} style={{ width: '4%' }} />)}
                             </colgroup>
                             <thead>
                               <tr className="bg-slate-100">
@@ -985,24 +1087,24 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                                 <th colSpan={visibleQuarters(game).length} className="border border-slate-500 px-0 py-0.5 text-center">出場時間</th>
                                 <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">ファウル</th>
                                 {visibleQuarters(game).map(q => <th key={q} rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">{quarterLabel(q)}</th>)}
-                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">O</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">D</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
+                                <th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">前半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">後半</th><th rowSpan={2} className="border border-slate-500 px-0 py-0.5 text-center align-middle">合計</th>
                               </tr>
                               <tr className="bg-slate-100">{visibleQuarters(game).map(q => <th key={q} className="border border-slate-500 px-0 py-0.5 text-center">{q}</th>)}</tr>
                             </thead>
                             <tbody>{players.map(player => {
                               const pe = teamEvents.filter(event => event.playerId === player.id)
                               const foulSymbols = pe.filter(event => event.type === 'foul').map(event => `P${(['₁','₂','₃','₄'][Math.min(event.quarter, 4) - 1] ?? '₄')}`)
-                              const qCells = visibleQuarters(game).map(q => pe.filter(event => event.quarter === q && event.type !== 'foul').map(eventSymbol).filter(Boolean))
+                              const qCells = visibleQuarters(game).map(q => pe.filter(event => event.quarter === q && event.type !== 'foul' && event.type !== 'offensiveRebound' && event.type !== 'defensiveRebound').map(eventSymbol).filter(Boolean))
                               const qPoints = [1,2,3,4,5,6].map(q => pe.filter(event => event.quarter === q && (event.type === 'shot' || event.type === 'freeThrow') && event.made).reduce((sum, event) => sum + pointsOf(event), 0))
                               const firstHalf = qPoints[0] + qPoints[1]
                               const secondHalf = qPoints[2] + qPoints[3] + qPoints[4] + qPoints[5]
                               return <tr key={player.id}>
                                 <td className="border border-slate-400 px-0.5 py-[1px]">{player.number}</td><td className="truncate border border-slate-400 px-0.5 py-[1px] font-semibold">{player.name}</td>{visibleQuarters(game).map(q => { const storedLineups = (game as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}; const qLineup = storedLineups[q]?.[team.id === game.homeTeamId ? 'home' : 'away'] ?? (q === 1 ? lineup : []); const wasSubbedIn = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.playerId === player.id); const wasSubbedOut = teamEvents.some(e => e.type === 'substitution' && e.quarter === q && e.relatedPlayerId === player.id); const appearedInQuarter = teamEvents.some(e => e.quarter === q && (e.playerId === player.id || e.relatedPlayerId === player.id)); const active = wasSubbedIn || wasSubbedOut || appearedInQuarter || qLineup.includes(player.id); return <td key={q} className="border border-slate-400 px-0 py-[1px] text-center font-bold leading-none"><span className={`inline-block ${wasSubbedIn ? 'text-red-600' : 'text-black'}`}>{active ? '〼' : '☐'}</span></td> })}<td className="border border-slate-400 px-0 py-[1px] text-center align-top"><div className="flex min-h-[16px] w-full">{[0,1,2,3,4].map(slot => <span key={slot} className={`flex min-w-0 flex-1 items-start justify-center font-bold text-red-700 ${slot < 4 ? 'border-r border-slate-400' : ''}`}>{foulSymbols[slot] ?? ''}</span>)}</div></td>
                                 {qCells.map((symbols, i) => <td key={i} className="border border-slate-400 px-0 py-[1px] text-left align-top"><div className="flex min-h-[16px] flex-wrap content-start justify-start gap-0">{symbols.length ? symbols.map((symbol, j) => <span key={j} className={`inline-block ${(['/', '〇', '☐', '☐☐', '〼☐'].includes(symbol)) ? 'font-bold text-red-700' : ''}`}>{symbol}</span>) : <span className="text-slate-300">·</span>}</div></td>)}
-                                <td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'offensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-bold">{pe.filter(e => e.type === 'defensiveRebound').length || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
+                                <td className="border border-slate-400 px-0 py-[1px] text-center">{firstHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center">{secondHalf || ''}</td><td className="border border-slate-400 px-0 py-[1px] text-center font-black">{qPoints.reduce((sum, n) => sum+n, 0)}</td>
                               </tr>
                             })}</tbody>
-                            <tfoot><tr className="bg-slate-100 font-black"><td colSpan={3 + visibleQuarters(game).length} className="border border-slate-500 p-1">チーム合計</td>{visibleQuarters(game).map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'offensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{teamEvents.filter(event => event.type === 'defensiveRebound').length}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
+                            <tfoot><tr className="bg-slate-100 font-black"><td colSpan={3 + visibleQuarters(game).length} className="border border-slate-500 p-1">チーム合計</td>{visibleQuarters(game).map(q=><td key={q} className="border border-slate-500 p-1 text-left">{quarterScore(q)}</td>)}<td className="border border-slate-500 p-1 text-center">{quarterScore(1)+quarterScore(2)}</td><td className="border border-slate-500 p-1 text-center">{quarterScore(3)+quarterScore(4)+quarterScore(5)+quarterScore(6)}</td><td className="border border-slate-500 p-1 text-center">{scoreFor(team.id)}</td></tr></tfoot>
                           </table>
                         </div>
                         <div className="mt-1 shrink-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,6fr)] gap-0.5 items-start">
@@ -1405,7 +1507,8 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
-                    <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white">共有</button>
+                    <button type="button" onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">共有</button>
+                    <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white">印刷・PDF保存</button>
                   </div>
                 </div>
                 <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
@@ -1419,6 +1522,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
+                  <button type="button" onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-blue-700 px-4 py-3 text-base font-bold text-white shadow-sm">共有</button>
                   <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-xl bg-emerald-700 px-4 py-3 text-base font-bold text-white shadow-sm">印刷・PDF保存</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
