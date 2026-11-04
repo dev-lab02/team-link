@@ -934,6 +934,29 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
       clone.style.setProperty('transform', 'none', 'important')
       clone.style.setProperty('overflow', 'hidden', 'important')
       clone.style.setProperty('background', '#ffffff', 'important')
+      // html2canvas の table/rowSpan 描画でヘッダー文字が上端に欠ける対策。
+      // PDF用の複製DOMだけを補正し、実際のスタッツ画面は変更しない。
+      clone.querySelectorAll<HTMLTableElement>('table').forEach(table => {
+        if (!table.querySelector('thead th[rowspan]')) return
+        table.style.setProperty('border-collapse', 'collapse', 'important')
+        table.querySelectorAll<HTMLTableRowElement>('thead tr').forEach(row => {
+          row.style.setProperty('height', '23px', 'important')
+          row.style.setProperty('min-height', '23px', 'important')
+        })
+        table.querySelectorAll<HTMLTableCellElement>('thead th').forEach(th => {
+          th.style.setProperty('height', th.rowSpan > 1 ? '46px' : '23px', 'important')
+          th.style.setProperty('min-height', th.rowSpan > 1 ? '46px' : '23px', 'important')
+          th.style.setProperty('line-height', '16px', 'important')
+          th.style.setProperty('padding-top', '3px', 'important')
+          th.style.setProperty('padding-bottom', '3px', 'important')
+          th.style.setProperty('vertical-align', 'middle', 'important')
+          th.style.setProperty('overflow', 'visible', 'important')
+          th.style.setProperty('white-space', 'nowrap', 'important')
+        })
+        // 表のヘッダーは overflow:hidden の祖先によるクリッピングを防止。
+        const wrapper = table.parentElement
+        if (wrapper) wrapper.style.setProperty('overflow', 'visible', 'important')
+      })
       staging.appendChild(clone)
       document.body.appendChild(staging)
       await document.fonts.ready
