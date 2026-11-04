@@ -913,9 +913,37 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
       const scale = Math.min((page.getWidth() - margin * 2) / rect.width, (page.getHeight() - margin * 2) / rect.height)
       const offsetX = (page.getWidth() - rect.width * scale) / 2
       const offsetY = (page.getHeight() - rect.height * scale) / 2
-      const color = (value: string) => {
-        const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
-        return m ? rgb(Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255) : rgb(0, 0, 0)
+      // CSSのtransparent / rgba(..., 0)を黒に変換しない。
+      // pdf-libは透明背景を描く必要がないので、背景色が透明なら描画をスキップする。
+      const parseCssColor = (value: string): { r: number; g: number; b: number; a: number } | null => {
+        const v = value.trim().toLowerCase()
+        if (!v || v === 'transparent' || v === 'none') return null
+        const clamp = (n: number) => Math.min(1, Math.max(0, n))
+        const rgbMatch = v.match(/^rgba?\(\s*([\d.]+)(%)?\s*[, ]\s*([\d.]+)(%)?\s*[, ]\s*([\d.]+)(%)?\s*(?:[,/]\s*([\d.]+)%?)?\s*\)$/)
+        if (rgbMatch) {
+          const channel = (i: number) => clamp(Number(rgbMatch[i]) / (rgbMatch[i + 1] ? 100 : 255))
+          const a = rgbMatch[7] === undefined ? 1 : clamp(Number(rgbMatch[7]) / (v.endsWith('%)') ? 100 : 1))
+          return { r: channel(1), g: channel(3), b: channel(5), a }
+        }
+        const hex = v.match(/^#([0-9a-f]{3,8})$/)
+        if (hex) {
+          let h = hex[1]
+          if (h.length === 3 || h.length === 4) h = [...h].map(c => c + c).join('')
+          if (h.length === 6 || h.length === 8) return {
+            r: parseInt(h.slice(0, 2), 16) / 255,
+            g: parseInt(h.slice(2, 4), 16) / 255,
+            b: parseInt(h.slice(4, 6), 16) / 255,
+            a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+          }
+        }
+        const srgb = v.match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)$/)
+        if (srgb) return { r: clamp(Number(srgb[1])), g: clamp(Number(srgb[2])), b: clamp(Number(srgb[3])), a: srgb[4] === undefined ? 1 : clamp(Number(srgb[4])) }
+        // 不明なCSS色は背景を塗らない。黒で塗りつぶすより安全。
+        return null
+      }
+      const pdfColor = (value: string) => {
+        const c = parseCssColor(value)
+        return c ? rgb(c.r, c.g, c.b) : rgb(0, 0, 0)
       }
       const x = (px: number) => offsetX + (px - rect.left) * scale
       const y = (px: number) => page.getHeight() - offsetY - (px - rect.top) * scale
@@ -926,9 +954,12 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
         const r = element.getBoundingClientRect()
         if (!inside(r)) continue
         const style = getComputedStyle(element)
-        const bg = style.backgroundColor
-        if (bg !== 'transparent' && !/^rgba\([^)]*,\s*0\s*\)$/.test(bg) && bg !== 'rgba(0, 0, 0, 0)') {
-          page.drawRectangle({ x: x(r.left), y: y(r.bottom), width: r.width * scale, height: r.height * scale, color: color(bg) })
+        const bg = parseCssColor(style.backgroundColor)
+        if (bg && bg.a > 0.001) {
+          page.drawRectangle({
+            x: x(r.left), y: y(r.bottom), width: r.width * scale, height: r.height * scale,
+            color: rgb(bg.r, bg.g, bg.b), opacity: bg.a,
+          })
         }
         const sides = [
           ['Top', r.left, r.top, r.right, r.top],
@@ -939,8 +970,8 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
         for (const [side, x1, y1, x2, y2] of sides) {
           const width = parseFloat(style[`border${side}Width` as keyof CSSStyleDeclaration] as string) || 0
           const lineStyle = style[`border${side}Style` as keyof CSSStyleDeclaration] as string
-          if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden') {
-            page.drawLine({ start: { x: x(x1), y: y(y1) }, end: { x: x(x2), y: y(y2) }, thickness: Math.max(.25, width * scale), color: color(style[`border${side}Color` as keyof CSSStyleDeclaration] as string) })
+          if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden' && (parseCssColor(style[`border${side}Color` as keyof CSSStyleDeclaration] as string)?.a ?? 0) > 0.001) {
+            page.drawLine({ start: { x: x(x1), y: y(y1) }, end: { x: x(x2), y: y(y2) }, thickness: Math.max(.25, width * scale), color: pdfColor(style[`border${side}Color` as keyof CSSStyleDeclaration] as string) })
           }
         }
       }
@@ -966,7 +997,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
         if (style.textAlign === 'center') textX += Math.max(0, (allowed - font.widthOfTextAtSize(text, fontSize)) / 2)
         else if (style.textAlign === 'right' || style.textAlign === 'end') textX += Math.max(0, allowed - font.widthOfTextAtSize(text, fontSize))
         try {
-          page.drawText(text, { x: textX, y: y(bounds.bottom) + (bounds.height * scale - fontSize) * .23, size: fontSize, font, color: color(style.color), maxWidth: allowed })
+          page.drawText(text, { x: textX, y: y(bounds.bottom) + (bounds.height * scale - fontSize) * .23, size: fontSize, font, color: pdfColor(style.color), maxWidth: allowed })
         } catch { /* 未収録の記号はスキップしてPDF全体の生成を継続 */ }
       }
       const bytes = await pdf.save()
