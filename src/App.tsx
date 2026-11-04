@@ -71,6 +71,7 @@ function App() {
   const [games, setGames] = useState<Game[]>([])
   const [statsGameIndex, setStatsGameIndex] = useState(-1)
   const [statsFullscreen, setStatsFullscreen] = useState(false)
+  const [preparedPdf, setPreparedPdf] = useState<{ gameId: string; file: File } | null>(null)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const statsSheetContainerRef = useRef<HTMLDivElement>(null)
   const [statsSheetWidth, setStatsSheetWidth] = useState(1000)
@@ -841,6 +842,55 @@ function App() {
     )
   }
 
+  // スコア表示のDOMを、画面の縮小率やスマホ幅に依存しない独立した印刷画面へ複製する。
+  // PDFの生成・保存はブラウザ標準の「印刷 → PDFに保存」で行う。
+  function printScoreSheet(gameId: string) {
+    const sheets = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
+    const source = sheets.find(el => el.dataset.gameId === gameId && el.closest('[role="dialog"]'))
+      ?? sheets.find(el => el.dataset.gameId === gameId && el.getBoundingClientRect().width > 0)
+    if (!source) {
+      window.alert('印刷するスコア表示が見つかりません。')
+      return
+    }
+
+    // ユーザーのクリック直後に開き、スマホのポップアップブロックを避ける。
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      window.alert('印刷画面を開けませんでした。ブラウザのポップアップを許可してください。')
+      return
+    }
+
+    const styles = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
+      .map(link => `<link rel="stylesheet" href="${link.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`)
+      .join('\n')
+    const inlineStyles = Array.from(document.querySelectorAll<HTMLStyleElement>('style'))
+      .map(style => style.outerHTML).join('\n')
+    const clone = source.cloneNode(true) as HTMLElement
+    clone.classList.remove('fixed', 'inset-0', 'z-50', 'h-[100dvh]', 'w-screen')
+    clone.style.setProperty('position', 'relative', 'important')
+    clone.style.setProperty('inset', 'auto', 'important')
+    clone.style.setProperty('width', '1000px', 'important')
+    clone.style.setProperty('min-width', '1000px', 'important')
+    clone.style.setProperty('height', '900px', 'important')
+    clone.style.setProperty('max-height', 'none', 'important')
+    clone.style.setProperty('transform', 'none', 'important')
+    clone.style.setProperty('overflow', 'hidden', 'important')
+    clone.querySelectorAll('button').forEach(button => button.remove())
+    const html = `<!doctype html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TEAM LINK スコア表示</title>${styles}${inlineStyles}
+<style>
+@page { size: A3 landscape; margin: 8mm; }
+html,body { margin:0!important; padding:0!important; background:#fff!important; }
+body { display:flex; justify-content:center; align-items:flex-start; }
+[data-teamlink-score-sheet] { box-sizing:border-box!important; flex:none!important; width:1000px!important; min-width:1000px!important; height:900px!important; position:relative!important; inset:auto!important; transform:none!important; overflow:hidden!important; background:white!important; }
+@media print { html,body { width:100%!important; height:auto!important; -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; } [data-teamlink-score-sheet] { break-inside:avoid; page-break-inside:avoid; } }
+</style></head><body>${clone.outerHTML}<script>
+window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.ready)await document.fonts.ready;}catch(e){} setTimeout(()=>{window.focus();window.print();},300);});
+<\/script></body></html>`
+    printWindow.document.open()
+    printWindow.document.write(html)
+    printWindow.document.close()
+  }
+
   // スコア表示をブラウザで実際に描画した画像としてPDFに埋め込む。
   // 旧方式（DOMの背景色・罫線・文字をpdf-libで再描画）はCSSを再現できず、
   // 黒塗りや罫線消失を起こしたため使用しない。
@@ -849,6 +899,7 @@ function App() {
     const source = candidates.find(el => el.dataset.gameId === game.id && el.closest('[role="dialog"]'))
       ?? candidates.find(el => el.dataset.gameId === game.id && el.getBoundingClientRect().width > 0)
     if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
+    setPreparedPdf(null)
     setPdfPreparing(true)
     setMessage('PDFを生成しています...')
     let staging: HTMLDivElement | null = null
@@ -956,23 +1007,8 @@ function App() {
       const bytes = await pdf.save()
       const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
       const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
-      // 共有ボタン1回でPDF生成からシェアシート表示まで実行する。
-      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
-        try {
-          await navigator.share({ files: [file], title: file.name })
-          setMessage('共有操作が完了しました。LINEへの送信結果をご確認ください。')
-        } catch (shareError) {
-          if (shareError instanceof DOMException && shareError.name === 'AbortError') {
-            setMessage('共有がキャンセルされました。')
-          } else {
-            savePdfFile(file)
-            setMessage('共有シートを開けなかったためPDFを保存しました。LINEから添付してください。')
-          }
-        }
-      } else {
-        savePdfFile(file)
-        setMessage('この端末ではPDFの直接共有に対応していないため、PDFを保存しました。LINEから添付してください。')
-      }
+      setPreparedPdf({ gameId: game.id, file })
+      setMessage('PDFを準備しました。PDF保存で表示を確認してから「LINEへ共有」を押してください。')
     } catch (error) {
       setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -981,8 +1017,28 @@ function App() {
     }
   }
 
-  // Web Share API非対応時のみPDFを端末に保存する。
-  function savePdfFile(file: File) {
+  // 共有はタップ直後に呼ぶ（PDF生成などのawaitを挟まない）。
+  function sharePreparedPdf(gameId: string) {
+    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
+    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
+    if (!navigator.share || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
+      setMessage('このブラウザはPDFファイルの共有に対応していません。「PDF保存」からLINEに添付してください。')
+      return
+    }
+    navigator.share({ files: [file], title: file.name }).then(() => {
+      setMessage('共有操作が完了しました。LINEに送信できたかご確認ください。')
+    }).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setMessage('共有がキャンセルされたか、LINE側で受け取れませんでした。「PDF保存」からLINEに添付してください。')
+      } else {
+        setMessage(`共有できませんでした。「PDF保存」からLINEに添付してください。${error instanceof Error ? ` (${error.message})` : ''}`)
+      }
+    })
+  }
+
+  function downloadPreparedPdf(gameId: string) {
+    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
+    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
     const url = URL.createObjectURL(file)
     const link = document.createElement('a')
     link.href = url
@@ -991,7 +1047,9 @@ function App() {
     link.click()
     link.remove()
     setTimeout(() => URL.revokeObjectURL(url), 60000)
+    setMessage('PDFを保存しました。LINEのトーク画面で「＋」→「ファイル」から添付してください。')
   }
+
 
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
@@ -1507,7 +1565,12 @@ function App() {
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
-                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? 'PDF生成中…' : '共有'}</button>
+                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
+                    {preparedPdf?.gameId === game.id && <>
+                      <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white">② LINEへ共有</button>
+                      <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-lg border border-slate-400 bg-white px-3 py-2 text-sm font-bold text-slate-900">PDF保存</button>
+                    </>}
+                    <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white">印刷・PDF保存</button>
                   </div>
                 </div>
                 <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
@@ -1521,7 +1584,12 @@ function App() {
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
-                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? 'PDF生成中…' : '共有'}</button>
+                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-blue-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
+                  {preparedPdf?.gameId === game.id && <>
+                    <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm">② LINEへ共有</button>
+                    <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-xl border border-slate-400 bg-white px-4 py-3 text-base font-bold">PDF保存</button>
+                  </>}
+                  <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-xl bg-emerald-700 px-4 py-3 text-base font-bold text-white shadow-sm">印刷・PDF保存</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
