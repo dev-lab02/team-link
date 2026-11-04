@@ -840,58 +840,98 @@ function App() {
     )
   }
 
-  // 表示中のスコアシートをそのままCanvasに描画し、PNGファイルとして共有する。
-  // HTMLの文字位置・罫線・背景を基準に描画するため、PDFへの再組版を行わない。
-  async function shareScoreSheetImage(game: Game) {
+  // スコア表の文字と罫線をPDFのベクター要素として直接描画する。
+  // 印刷画面・PNG・SVGを経由しないため、画像化による文字の拡大縮小を避ける。
+  async function shareScoreSheetPdf(game: Game) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
-      .filter(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0)
-    // 全画面表示中は、プレビュー用の縮小版ではなく全画面のシートを優先する。
-    const source = candidates.find(el => el.closest('[aria-label="スタッツ管理 全画面"]'))
-      ?? candidates.find(el => el.classList.contains('fixed'))
-      ?? candidates[candidates.length - 1]
-    if (!source) { setMessage('スコア表示を開いてから画像共有してください。'); return }
-    setMessage('スコア表示の画像を作成しています...')
+    const source = candidates.filter(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0).sort((a, b) => Number(b.classList.contains('fixed')) - Number(a.classList.contains('fixed')))[0]
+    if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
+    setMessage('PDFを生成しています...')
     try {
-      const { default: html2canvas } = await import('html2canvas-pro')
-      await document.fonts.ready
-      const width = Math.ceil(source.getBoundingClientRect().width)
-      const height = Math.ceil(source.getBoundingClientRect().height)
-      if (width < 100 || height < 100) throw new Error('スコア表示のサイズを取得できませんでした。')
-      const canvas = await html2canvas(source, {
-        backgroundColor: '#ffffff',
-        scale: Math.min(2, 3200 / Math.max(width, height)),
-        width,
-        height,
-        useCORS: true,
-        logging: false,
-        scrollX: 0,
-        scrollY: 0,
-        onclone: (doc) => {
-          // ボタンなどはシートの外にあるため画像に含まれない。
-          // スクリーンの印刷用CSSは適用せず、現在の見た目を維持する。
-          doc.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]').forEach(el => {
-            el.style.backgroundColor = '#ffffff'
-          })
-        },
-      })
-      const blob = await new Promise<Blob>((resolve, reject) =>
-        canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNGの生成に失敗しました。')), 'image/png')
-      )
-      const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\\\/:*?"<>|]/g, '_')}_スコア表示.png`
-      const file = new File([blob], fileName, { type: 'image/png' })
-      if (navigator.share && navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({ files: [file], title: `${game.name || '試合'} スコア表示` })
-          setMessage('共有メニューを開きました。')
-          return
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            setMessage('共有をキャンセルしました。')
-            return
+      const [{ PDFDocument, rgb }, fontkit] = await Promise.all([import('pdf-lib'), import('@pdf-lib/fontkit')])
+      const response = await fetch(`${import.meta.env.BASE_URL}fonts/NotoSansCJK-Regular.otf`)
+      if (!response.ok) throw new Error('日本語フォントが見つかりません。public/fonts にフォントを配置してください。')
+      const fontBytes = await response.arrayBuffer()
+      const pdf = await PDFDocument.create()
+      pdf.registerFontkit(fontkit.default)
+      const font = await pdf.embedFont(fontBytes, { subset: true })
+      // A3横向き。画面のスコア表全体を1ページに収める。
+      const page = pdf.addPage([1190.55, 841.89])
+      const rect = source.getBoundingClientRect()
+      const margin = 22
+      const scale = Math.min((page.getWidth() - margin * 2) / rect.width, (page.getHeight() - margin * 2) / rect.height)
+      const offsetX = (page.getWidth() - rect.width * scale) / 2
+      const offsetY = (page.getHeight() - rect.height * scale) / 2
+      const color = (value: string) => {
+        const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
+        return m ? rgb(Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255) : rgb(0, 0, 0)
+      }
+      const x = (px: number) => offsetX + (px - rect.left) * scale
+      const y = (px: number) => page.getHeight() - offsetY - (px - rect.top) * scale
+      const inside = (r: DOMRect) => r.width > 0 && r.height > 0 && r.right > rect.left && r.left < rect.right && r.bottom > rect.top && r.top < rect.bottom
+      // 背景と罫線を先に描画。文字は最後に描画して視認性を保つ。
+      const elements = [source, ...Array.from(source.querySelectorAll<HTMLElement>('*'))]
+      for (const element of elements) {
+        const r = element.getBoundingClientRect()
+        if (!inside(r)) continue
+        const style = getComputedStyle(element)
+        const bg = style.backgroundColor
+        if (bg !== 'transparent' && !/^rgba\([^)]*,\s*0\s*\)$/.test(bg) && bg !== 'rgba(0, 0, 0, 0)') {
+          page.drawRectangle({ x: x(r.left), y: y(r.bottom), width: r.width * scale, height: r.height * scale, color: color(bg) })
+        }
+        const sides = [
+          ['Top', r.left, r.top, r.right, r.top],
+          ['Bottom', r.left, r.bottom, r.right, r.bottom],
+          ['Left', r.left, r.top, r.left, r.bottom],
+          ['Right', r.right, r.top, r.right, r.bottom],
+        ] as const
+        for (const [side, x1, y1, x2, y2] of sides) {
+          const width = parseFloat(style[`border${side}Width` as keyof CSSStyleDeclaration] as string) || 0
+          const lineStyle = style[`border${side}Style` as keyof CSSStyleDeclaration] as string
+          if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden') {
+            page.drawLine({ start: { x: x(x1), y: y(y1) }, end: { x: x(x2), y: y(y2) }, thickness: Math.max(.25, width * scale), color: color(style[`border${side}Color` as keyof CSSStyleDeclaration] as string) })
           }
         }
       }
-      const url = URL.createObjectURL(blob)
+      const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const parent = node.parentElement
+        const text = node.textContent?.replace(/\s+/g, ' ').trim()
+        if (!parent || !text) continue
+        const style = getComputedStyle(parent)
+        if (style.visibility === 'hidden' || style.display === 'none') continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        const bounds = range.getBoundingClientRect()
+        if (!inside(bounds)) continue
+        const size = Math.max(3.5, Math.min(22, parseFloat(style.fontSize) * scale * .83))
+        // 行内文字を矩形の中心線に合わせて配置。文字幅が広い場合は縮小。
+        let textWidth = 0
+        try { textWidth = font.widthOfTextAtSize(text, size) } catch { continue }
+        const allowed = Math.max(2, bounds.width * scale)
+        const fontSize = textWidth > allowed ? Math.max(2.5, size * allowed / textWidth) : size
+        let textX = x(bounds.left)
+        if (style.textAlign === 'center') textX += Math.max(0, (allowed - font.widthOfTextAtSize(text, fontSize)) / 2)
+        else if (style.textAlign === 'right' || style.textAlign === 'end') textX += Math.max(0, allowed - font.widthOfTextAtSize(text, fontSize))
+        try {
+          page.drawText(text, { x: textX, y: y(bounds.bottom) + (bounds.height * scale - fontSize) * .23, size: fontSize, font, color: color(style.color), maxWidth: allowed })
+        } catch { /* 未収録の記号はスキップしてPDF全体の生成を継続 */ }
+      }
+      const bytes = await pdf.save()
+      const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
+      const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: `${game.name || '試合'} スコア表示` })
+          setMessage('共有メニューを開きました。LINEを選んで送信してください。')
+          return
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') { setMessage('共有をキャンセルしました。'); return }
+        }
+      }
+      // ファイル共有に非対応のブラウザではPDFダウンロードに切り替える。
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }))
       const link = document.createElement('a')
       link.href = url
       link.download = fileName
@@ -899,11 +939,12 @@ function App() {
       link.click()
       link.remove()
       setTimeout(() => URL.revokeObjectURL(url), 60000)
-      setMessage('画像を保存しました。LINEで写真として送信できます。')
+      setMessage('このブラウザはPDFの直接共有に対応していないため、PDFを保存しました。LINEのファイル添付から送信できます。')
     } catch (error) {
-      setMessage(`画像の生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
+      setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     }
   }
+
 
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
@@ -1420,7 +1461,7 @@ function App() {
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => shareScoreSheetImage(game)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white">スタッツを共有</button>
+                    <button type="button" onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white">PDFを共有</button>
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
                   </div>
                 </div>
@@ -1435,7 +1476,7 @@ function App() {
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
-                  <button type="button" onClick={() => shareScoreSheetImage(game)} className="rounded-xl bg-emerald-600 px-3 py-3 text-sm font-bold text-white">写真をLINEで共有</button>
+                  <button type="button" onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-emerald-600 px-3 py-3 text-sm font-bold text-white">PDFを共有</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -1789,7 +1830,7 @@ function App() {
               </>
                 )}
                 {recordView === 'original' && <>
-                  <div className="my-2 flex justify-end"><button type="button" onClick={() => shareScoreSheetImage(selectedGame)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white">写真をLINEで共有</button></div>
+                  <div className="my-2 flex justify-end"><button type="button" onClick={() => shareScoreSheetPdf(selectedGame)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white">PDFを共有</button></div>
                   {renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
                 </>}
               </>
