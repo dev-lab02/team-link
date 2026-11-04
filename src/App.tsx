@@ -891,126 +891,86 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     printWindow.document.close()
   }
 
+  // スコア表示をブラウザで実際に描画した画像としてPDFに埋め込む。
+  // 旧方式（DOMの背景色・罫線・文字をpdf-libで再描画）はCSSを再現できず、
+  // 黒塗りや罫線消失を起こしたため使用しない。
   async function shareScoreSheetPdf(game: Game) {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
-    const source = candidates.filter(el => el.getAttribute('data-game-id') === game.id && el.getBoundingClientRect().width > 0).sort((a, b) => Number(b.classList.contains('fixed')) - Number(a.classList.contains('fixed')))[0]
+    const source = candidates.find(el => el.dataset.gameId === game.id && el.closest('[role="dialog"]'))
+      ?? candidates.find(el => el.dataset.gameId === game.id && el.getBoundingClientRect().width > 0)
     if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
     setPreparedPdf(null)
     setPdfPreparing(true)
     setMessage('PDFを生成しています...')
+    let staging: HTMLDivElement | null = null
     try {
-      const [{ PDFDocument, rgb }, fontkit] = await Promise.all([import('pdf-lib'), import('@pdf-lib/fontkit')])
-      const response = await fetch(`${import.meta.env.BASE_URL}fonts/NotoSansCJK-Regular.otf`)
-      if (!response.ok) throw new Error('日本語フォントが見つかりません。public/fonts にフォントを配置してください。')
-      const fontBytes = await response.arrayBuffer()
+      const [{ PDFDocument }, { default: html2canvas }] = await Promise.all([
+        import('pdf-lib'),
+        import('html2canvas-pro'),
+      ])
+      // 画面幅・拡大率・親要素のtransform/overflowに左右されないよう、
+      // 印刷用のスコアシートを固定サイズでDOMに独立配置する。
+      const captureWidth = 1800
+      const captureHeight = 900
+      staging = document.createElement('div')
+      staging.setAttribute('aria-hidden', 'true')
+      Object.assign(staging.style, {
+        position: 'fixed', left: '0px', top: '0px', zIndex: '-2147483647',
+        width: `${captureWidth}px`, height: `${captureHeight}px`,
+        overflow: 'hidden', pointerEvents: 'none', background: '#ffffff',
+        opacity: '1', transform: 'none',
+      })
+      const clone = source.cloneNode(true) as HTMLElement
+      clone.classList.remove('fixed', 'inset-0', 'z-50', 'h-[100dvh]', 'w-screen')
+      clone.querySelectorAll('button').forEach(button => button.remove())
+      clone.style.setProperty('position', 'relative', 'important')
+      clone.style.setProperty('inset', 'auto', 'important')
+      clone.style.setProperty('width', `${captureWidth}px`, 'important')
+      clone.style.setProperty('min-width', `${captureWidth}px`, 'important')
+      clone.style.setProperty('max-width', 'none', 'important')
+      clone.style.setProperty('height', `${captureHeight}px`, 'important')
+      clone.style.setProperty('min-height', `${captureHeight}px`, 'important')
+      clone.style.setProperty('max-height', 'none', 'important')
+      clone.style.setProperty('transform', 'none', 'important')
+      clone.style.setProperty('overflow', 'hidden', 'important')
+      clone.style.setProperty('background', '#ffffff', 'important')
+      staging.appendChild(clone)
+      document.body.appendChild(staging)
+      await document.fonts.ready
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      const canvas = await html2canvas(clone, {
+        backgroundColor: '#ffffff',
+        width: captureWidth,
+        height: captureHeight,
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+        onclone: (doc: Document) => {
+          // キャプチャ側のルート要素に画面幅制約を適用させない。
+          doc.documentElement.style.width = `${captureWidth}px`
+          doc.documentElement.style.minWidth = `${captureWidth}px`
+        },
+      })
+      const pngBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
+        canvas.toBlob((blob: Blob | null) => {
+          if (!blob) { reject(new Error('スコア表示の画像生成に失敗しました。')); return }
+          blob.arrayBuffer().then(resolve, reject)
+        }, 'image/png')
+      })
       const pdf = await PDFDocument.create()
-      pdf.registerFontkit(fontkit.default)
-      const font = await pdf.embedFont(fontBytes, { subset: true })
-      // A3横向き。画面のスコア表全体を1ページに収める。
-      const page = pdf.addPage([1190.55, 841.89])
-      const rect = source.getBoundingClientRect()
-      const margin = 22
-      const scale = Math.min((page.getWidth() - margin * 2) / rect.width, (page.getHeight() - margin * 2) / rect.height)
-      const offsetX = (page.getWidth() - rect.width * scale) / 2
-      const offsetY = (page.getHeight() - rect.height * scale) / 2
-      // CSSのtransparent / rgba(..., 0)を黒に変換しない。
-      // pdf-libは透明背景を描く必要がないので、背景色が透明なら描画をスキップする。
-      const parseCssColor = (value: string): { r: number; g: number; b: number; a: number } | null => {
-        const v = value.trim().toLowerCase()
-        if (!v || v === 'transparent' || v === 'none') return null
-        const clamp = (n: number) => Math.min(1, Math.max(0, n))
-        const rgbMatch = v.match(/^rgba?\(\s*([\d.]+)(%)?\s*[, ]\s*([\d.]+)(%)?\s*[, ]\s*([\d.]+)(%)?\s*(?:[,/]\s*([\d.]+)%?)?\s*\)$/)
-        if (rgbMatch) {
-          const channel = (i: number) => clamp(Number(rgbMatch[i]) / (rgbMatch[i + 1] ? 100 : 255))
-          const a = rgbMatch[7] === undefined ? 1 : clamp(Number(rgbMatch[7]) / (v.endsWith('%)') ? 100 : 1))
-          return { r: channel(1), g: channel(3), b: channel(5), a }
-        }
-        const hex = v.match(/^#([0-9a-f]{3,8})$/)
-        if (hex) {
-          let h = hex[1]
-          if (h.length === 3 || h.length === 4) h = [...h].map(c => c + c).join('')
-          if (h.length === 6 || h.length === 8) return {
-            r: parseInt(h.slice(0, 2), 16) / 255,
-            g: parseInt(h.slice(2, 4), 16) / 255,
-            b: parseInt(h.slice(4, 6), 16) / 255,
-            a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
-          }
-        }
-        const srgb = v.match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)$/)
-        if (srgb) return { r: clamp(Number(srgb[1])), g: clamp(Number(srgb[2])), b: clamp(Number(srgb[3])), a: srgb[4] === undefined ? 1 : clamp(Number(srgb[4])) }
-        // 不明なCSS色は背景を塗らない。黒で塗りつぶすより安全。
-        return null
-      }
-      const pdfColor = (value: string) => {
-        const c = parseCssColor(value)
-        return c ? rgb(c.r, c.g, c.b) : rgb(0, 0, 0)
-      }
-      const x = (px: number) => offsetX + (px - rect.left) * scale
-      const y = (px: number) => page.getHeight() - offsetY - (px - rect.top) * scale
-      const inside = (r: DOMRect) => r.width > 0 && r.height > 0 && r.right > rect.left && r.left < rect.right && r.bottom > rect.top && r.top < rect.bottom
-      // 背景と罫線を先に描画。文字は最後に描画して視認性を保つ。
-      const elements = [source, ...Array.from(source.querySelectorAll<HTMLElement>('*'))]
-      for (const element of elements) {
-        const r = element.getBoundingClientRect()
-        if (!inside(r)) continue
-        const style = getComputedStyle(element)
-        const bg = parseCssColor(style.backgroundColor)
-        if (bg && bg.a > 0.001) {
-          page.drawRectangle({
-            x: x(r.left), y: y(r.bottom), width: r.width * scale, height: r.height * scale,
-            color: rgb(bg.r, bg.g, bg.b), opacity: bg.a,
-          })
-        }
-        const sides = [
-          ['Top', r.left, r.top, r.right, r.top],
-          ['Bottom', r.left, r.bottom, r.right, r.bottom],
-          ['Left', r.left, r.top, r.left, r.bottom],
-          ['Right', r.right, r.top, r.right, r.bottom],
-        ] as const
-        for (const [side, x1, y1, x2, y2] of sides) {
-          const width = parseFloat(style[`border${side}Width` as keyof CSSStyleDeclaration] as string) || 0
-          const lineStyle = style[`border${side}Style` as keyof CSSStyleDeclaration] as string
-          if (width > 0 && lineStyle !== 'none' && lineStyle !== 'hidden' && (parseCssColor(style[`border${side}Color` as keyof CSSStyleDeclaration] as string)?.a ?? 0) > 0.001) {
-            page.drawLine({ start: { x: x(x1), y: y(y1) }, end: { x: x(x2), y: y(y2) }, thickness: Math.max(.25, width * scale), color: pdfColor(style[`border${side}Color` as keyof CSSStyleDeclaration] as string) })
-          }
-        }
-      }
-      const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT)
-      let node: Node | null
-      while ((node = walker.nextNode())) {
-        const parent = node.parentElement
-        const text = node.textContent?.replace(/\s+/g, ' ').trim()
-        if (!parent || !text) continue
-        const style = getComputedStyle(parent)
-        if (style.visibility === 'hidden' || style.display === 'none') continue
-        const range = document.createRange()
-        range.selectNodeContents(node)
-        const bounds = range.getBoundingClientRect()
-        if (!inside(bounds)) continue
-        const size = Math.max(3.5, Math.min(22, parseFloat(style.fontSize) * scale * .83))
-        // 行内文字を矩形の中心線に合わせて配置。文字幅が広い場合は縮小。
-        let textWidth = 0
-        try { textWidth = font.widthOfTextAtSize(text, size) } catch { continue }
-        const allowed = Math.max(2, bounds.width * scale)
-        const fontSize = textWidth > allowed ? Math.max(2.5, size * allowed / textWidth) : size
-        let textX = x(bounds.left)
-        if (style.textAlign === 'center') textX += Math.max(0, (allowed - font.widthOfTextAtSize(text, fontSize)) / 2)
-        else if (style.textAlign === 'right' || style.textAlign === 'end') textX += Math.max(0, allowed - font.widthOfTextAtSize(text, fontSize))
-        try {
-          page.drawText(text, { x: textX, y: y(bounds.bottom) + (bounds.height * scale - fontSize) * .23, size: fontSize, font, color: pdfColor(style.color), maxWidth: allowed })
-        } catch { /* 未収録の記号はスキップしてPDF全体の生成を継続 */ }
-      }
+      // スコア表示の横長比率を維持した1ページPDF（印刷時は用紙に合わせて縮小可能）。
+      const page = pdf.addPage([captureWidth, captureHeight])
+      const image = await pdf.embedPng(pngBytes)
+      page.drawImage(image, { x: 0, y: 0, width: captureWidth, height: captureHeight })
       const bytes = await pdf.save()
       const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
       const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
-      // PDF生成後に共有APIを呼ぶと、特にAndroidのLINEではユーザー操作権限が失われて
-      // 共有シートからLINEを選んでも反応しないことがある。
-      // 生成と共有を別のタップに分離し、共有APIをタップ直後に実行する。
       setPreparedPdf({ gameId: game.id, file })
-      setMessage('PDFを準備しました。「LINEへ共有」を押してください。LINEが反応しない場合は「PDF保存」からLINEのファイル添付で送信できます。')
+      setMessage('PDFを準備しました。PDF保存で表示を確認してから「LINEへ共有」を押してください。')
     } catch (error) {
       setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     } finally {
+      staging?.remove()
       setPdfPreparing(false)
     }
   }
