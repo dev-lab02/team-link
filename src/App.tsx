@@ -934,28 +934,47 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
       clone.style.setProperty('transform', 'none', 'important')
       clone.style.setProperty('overflow', 'hidden', 'important')
       clone.style.setProperty('background', '#ffffff', 'important')
-      // html2canvas の table/rowSpan 描画でヘッダー文字が上端に欠ける対策。
-      // PDF用の複製DOMだけを補正し、実際のスタッツ画面は変更しない。
+      // html2canvas-pro は rowspan=2 の見出しを上半分だけ描画することがある。
+      // PDF用の複製だけ、2段ヘッダーを rowspan のない1段ヘッダーに変換する。
+      // colgroup/列数/データ行は変更しないので表の横幅と集計は維持される。
       clone.querySelectorAll<HTMLTableElement>('table').forEach(table => {
-        if (!table.querySelector('thead th[rowspan]')) return
+        const thead = table.tHead
+        if (!thead || thead.rows.length !== 2 || !thead.querySelector('th[rowspan="2"]')) return
+        const firstRow = thead.rows[0]
+        const secondRow = thead.rows[1]
+        const attendanceNumbers = Array.from(secondRow.cells).map(cell => cell.textContent?.trim() ?? '')
+        const firstCells = Array.from(firstRow.cells)
+        const attendanceCell = firstCells.find(cell => cell.textContent?.includes('出場時間'))
+        if (!attendanceCell) return
+        attendanceCell.innerHTML = ''
+        const heading = document.createElement('div')
+        heading.textContent = '出場時間'
+        heading.style.cssText = 'height:16px;line-height:16px;text-align:center;white-space:nowrap;'
+        const quarters = document.createElement('div')
+        quarters.style.cssText = 'display:flex;width:100%;height:16px;line-height:16px;align-items:center;'
+        attendanceNumbers.forEach(number => {
+          const part = document.createElement('span')
+          part.textContent = number
+          part.style.cssText = 'flex:1;min-width:0;text-align:center;border-right:1px solid #94a3b8;'
+          quarters.appendChild(part)
+        })
+        attendanceCell.append(heading, quarters)
+        firstCells.forEach(cell => {
+          if (cell instanceof HTMLTableCellElement) {
+            cell.removeAttribute('rowspan')
+            cell.style.setProperty('height', '34px', 'important')
+            cell.style.setProperty('min-height', '34px', 'important')
+            cell.style.setProperty('line-height', '18px', 'important')
+            cell.style.setProperty('vertical-align', 'middle', 'important')
+            cell.style.setProperty('overflow', 'visible', 'important')
+            cell.style.setProperty('white-space', 'nowrap', 'important')
+            cell.style.setProperty('padding-top', '1px', 'important')
+            cell.style.setProperty('padding-bottom', '1px', 'important')
+          }
+        })
+        secondRow.remove()
+        firstRow.style.setProperty('height', '34px', 'important')
         table.style.setProperty('border-collapse', 'collapse', 'important')
-        table.querySelectorAll<HTMLTableRowElement>('thead tr').forEach(row => {
-          row.style.setProperty('height', '23px', 'important')
-          row.style.setProperty('min-height', '23px', 'important')
-        })
-        table.querySelectorAll<HTMLTableCellElement>('thead th').forEach(th => {
-          th.style.setProperty('height', th.rowSpan > 1 ? '46px' : '23px', 'important')
-          th.style.setProperty('min-height', th.rowSpan > 1 ? '46px' : '23px', 'important')
-          th.style.setProperty('line-height', '16px', 'important')
-          th.style.setProperty('padding-top', '3px', 'important')
-          th.style.setProperty('padding-bottom', '3px', 'important')
-          th.style.setProperty('vertical-align', 'middle', 'important')
-          th.style.setProperty('overflow', 'visible', 'important')
-          th.style.setProperty('white-space', 'nowrap', 'important')
-        })
-        // 表のヘッダーは overflow:hidden の祖先によるクリッピングを防止。
-        const wrapper = table.parentElement
-        if (wrapper) wrapper.style.setProperty('overflow', 'visible', 'important')
       })
       staging.appendChild(clone)
       document.body.appendChild(staging)
