@@ -841,55 +841,6 @@ function App() {
     )
   }
 
-  // スコア表示のDOMを、画面の縮小率やスマホ幅に依存しない独立した印刷画面へ複製する。
-  // PDFの生成・保存はブラウザ標準の「印刷 → PDFに保存」で行う。
-  function printScoreSheet(gameId: string) {
-    const sheets = Array.from(document.querySelectorAll<HTMLElement>('[data-teamlink-score-sheet]'))
-    const source = sheets.find(el => el.dataset.gameId === gameId && el.closest('[role="dialog"]'))
-      ?? sheets.find(el => el.dataset.gameId === gameId && el.getBoundingClientRect().width > 0)
-    if (!source) {
-      window.alert('印刷するスコア表示が見つかりません。')
-      return
-    }
-
-    // ユーザーのクリック直後に開き、スマホのポップアップブロックを避ける。
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) {
-      window.alert('印刷画面を開けませんでした。ブラウザのポップアップを許可してください。')
-      return
-    }
-
-    const styles = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
-      .map(link => `<link rel="stylesheet" href="${link.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`)
-      .join('\n')
-    const inlineStyles = Array.from(document.querySelectorAll<HTMLStyleElement>('style'))
-      .map(style => style.outerHTML).join('\n')
-    const clone = source.cloneNode(true) as HTMLElement
-    clone.classList.remove('fixed', 'inset-0', 'z-50', 'h-[100dvh]', 'w-screen')
-    clone.style.setProperty('position', 'relative', 'important')
-    clone.style.setProperty('inset', 'auto', 'important')
-    clone.style.setProperty('width', '1000px', 'important')
-    clone.style.setProperty('min-width', '1000px', 'important')
-    clone.style.setProperty('height', '900px', 'important')
-    clone.style.setProperty('max-height', 'none', 'important')
-    clone.style.setProperty('transform', 'none', 'important')
-    clone.style.setProperty('overflow', 'hidden', 'important')
-    clone.querySelectorAll('button').forEach(button => button.remove())
-    const html = `<!doctype html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TEAM LINK スコア表示</title>${styles}${inlineStyles}
-<style>
-@page { size: A3 landscape; margin: 8mm; }
-html,body { margin:0!important; padding:0!important; background:#fff!important; }
-body { display:flex; justify-content:center; align-items:flex-start; }
-[data-teamlink-score-sheet] { box-sizing:border-box!important; flex:none!important; width:1000px!important; min-width:1000px!important; height:900px!important; position:relative!important; inset:auto!important; transform:none!important; overflow:hidden!important; background:white!important; }
-@media print { html,body { width:100%!important; height:auto!important; -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; } [data-teamlink-score-sheet] { break-inside:avoid; page-break-inside:avoid; } }
-</style></head><body>${clone.outerHTML}<script>
-window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.ready)await document.fonts.ready;}catch(e){} setTimeout(()=>{window.focus();window.print();},300);});
-<\/script></body></html>`
-    printWindow.document.open()
-    printWindow.document.write(html)
-    printWindow.document.close()
-  }
-
   // スコア表示をブラウザで実際に描画した画像としてPDFに埋め込む。
   // 旧方式（DOMの背景色・罫線・文字をpdf-libで再描画）はCSSを再現できず、
   // 黒塗りや罫線消失を起こしたため使用しない。
