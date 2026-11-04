@@ -71,7 +71,6 @@ function App() {
   const [games, setGames] = useState<Game[]>([])
   const [statsGameIndex, setStatsGameIndex] = useState(-1)
   const [statsFullscreen, setStatsFullscreen] = useState(false)
-  const [preparedPdf, setPreparedPdf] = useState<{ gameId: string; file: File } | null>(null)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const statsSheetContainerRef = useRef<HTMLDivElement>(null)
   const [statsSheetWidth, setStatsSheetWidth] = useState(1000)
@@ -899,7 +898,6 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     const source = candidates.find(el => el.dataset.gameId === game.id && el.closest('[role="dialog"]'))
       ?? candidates.find(el => el.dataset.gameId === game.id && el.getBoundingClientRect().width > 0)
     if (!source) { setMessage('スコア表示を開いてからPDF共有してください。'); return }
-    setPreparedPdf(null)
     setPdfPreparing(true)
     setMessage('PDFを生成しています...')
     let staging: HTMLDivElement | null = null
@@ -1007,8 +1005,23 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
       const bytes = await pdf.save()
       const fileName = `${(game.name || 'TEAM_LINK_スコア表示').replace(/[\\/:*?"<>|]/g, '_')}_スコア表示.pdf`
       const file = new File([new Uint8Array(bytes)], fileName, { type: 'application/pdf' })
-      setPreparedPdf({ gameId: game.id, file })
-      setMessage('PDFを準備しました。PDF保存で表示を確認してから「LINEへ共有」を押してください。')
+      // 共有ボタン1回でPDF生成からシェアシート表示まで実行する。
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        try {
+          await navigator.share({ files: [file], title: file.name })
+          setMessage('共有操作が完了しました。LINEへの送信結果をご確認ください。')
+        } catch (shareError) {
+          if (shareError instanceof DOMException && shareError.name === 'AbortError') {
+            setMessage('共有がキャンセルされました。')
+          } else {
+            savePdfFile(file)
+            setMessage('共有シートを開けなかったためPDFを保存しました。LINEから添付してください。')
+          }
+        }
+      } else {
+        savePdfFile(file)
+        setMessage('この端末ではPDFの直接共有に対応していないため、PDFを保存しました。LINEから添付してください。')
+      }
     } catch (error) {
       setMessage(`PDF生成に失敗しました：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -1017,28 +1030,8 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     }
   }
 
-  // 共有はタップ直後に呼ぶ（PDF生成などのawaitを挟まない）。
-  function sharePreparedPdf(gameId: string) {
-    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
-    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
-    if (!navigator.share || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
-      setMessage('このブラウザはPDFファイルの共有に対応していません。「PDF保存」からLINEに添付してください。')
-      return
-    }
-    navigator.share({ files: [file], title: file.name }).then(() => {
-      setMessage('共有操作が完了しました。LINEに送信できたかご確認ください。')
-    }).catch((error: unknown) => {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setMessage('共有がキャンセルされたか、LINE側で受け取れませんでした。「PDF保存」からLINEに添付してください。')
-      } else {
-        setMessage(`共有できませんでした。「PDF保存」からLINEに添付してください。${error instanceof Error ? ` (${error.message})` : ''}`)
-      }
-    })
-  }
-
-  function downloadPreparedPdf(gameId: string) {
-    const file = preparedPdf?.gameId === gameId ? preparedPdf.file : null
-    if (!file) { setMessage('先に「PDFを準備」を押してください。'); return }
+  // Web Share API非対応時のみPDFを端末に保存する。
+  function savePdfFile(file: File) {
     const url = URL.createObjectURL(file)
     const link = document.createElement('a')
     link.href = url
@@ -1047,9 +1040,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
     link.click()
     link.remove()
     setTimeout(() => URL.revokeObjectURL(url), 60000)
-    setMessage('PDFを保存しました。LINEのトーク画面で「＋」→「ファイル」から添付してください。')
   }
-
 
   function renderOriginalSheet(game: Game, homeTeam: Team, awayTeam: Team, embedded = false) {
 
@@ -1565,12 +1556,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
                   <h3 className="text-lg font-bold">スコア表示</h3>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={() => setStatsFullscreen(true)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white">⛶ 全画面表示</button>
-                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
-                    {preparedPdf?.gameId === game.id && <>
-                      <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white">② LINEへ共有</button>
-                      <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-lg border border-slate-400 bg-white px-3 py-2 text-sm font-bold text-slate-900">PDF保存</button>
-                    </>}
-                    <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white">印刷・PDF保存</button>
+                    <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-lg bg-green-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">{pdfPreparing ? 'PDF生成中…' : '共有'}</button>
                   </div>
                 </div>
                 <div ref={statsSheetContainerRef} className="w-full overflow-hidden rounded-lg border border-slate-200">
@@ -1584,12 +1570,7 @@ window.addEventListener('load',async()=>{try{if(document.fonts&&document.fonts.r
               <div className="rounded-2xl bg-white p-3 shadow-sm stats-box-score">{renderBoxScore(game, statsHome, statsAway)}</div>
               {statsFullscreen && <div className="fixed inset-0 z-[100] flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white" role="dialog" aria-modal="true" aria-label="スタッツ管理 全画面">
                 <div className="flex shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-2 py-2 sm:px-3">
-                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-blue-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? '生成中…' : '① PDFを準備'}</button>
-                  {preparedPdf?.gameId === game.id && <>
-                    <button type="button" onClick={() => sharePreparedPdf(game.id)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm">② LINEへ共有</button>
-                    <button type="button" onClick={() => downloadPreparedPdf(game.id)} className="rounded-xl border border-slate-400 bg-white px-4 py-3 text-base font-bold">PDF保存</button>
-                  </>}
-                  <button type="button" onClick={() => printScoreSheet(game.id)} className="rounded-xl bg-emerald-700 px-4 py-3 text-base font-bold text-white shadow-sm">印刷・PDF保存</button>
+                  <button type="button" disabled={pdfPreparing} onClick={() => shareScoreSheetPdf(game)} className="rounded-xl bg-green-700 px-4 py-3 text-base font-bold text-white shadow-sm disabled:opacity-50">{pdfPreparing ? 'PDF生成中…' : '共有'}</button>
                   <button type="button" onClick={() => setStatsFullscreen(false)} className="rounded-xl border border-slate-400 bg-slate-50 px-6 py-3 text-lg font-bold shadow-sm sm:px-8">× 閉じる</button>
                 </div>
                 <div className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
