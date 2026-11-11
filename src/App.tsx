@@ -1398,14 +1398,14 @@ function App() {
     )
   }
   return (
-    <main className={`min-h-screen bg-slate-100 text-slate-900 ${page === 'game-record' ? 'px-0 py-1 lg:h-dvh lg:overflow-hidden' : 'px-0 py-4 sm:py-6'}`}>
+    <main className={`min-h-screen bg-slate-100 text-slate-900 ${page === 'game-record' ? 'px-0 py-0 lg:h-dvh lg:overflow-hidden' : 'px-0 py-1 sm:py-1'}`}>
       <div className="w-full">
-        <header className="mb-2 px-2 sm:px-3">
+        <header className={`px-2 sm:px-3 ${page === 'game-record' ? 'mb-0' : 'mb-1'}`}>
           <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
         </header>
 
         {page !== 'game-detail' && page !== 'game-record' && (
-          <nav className="mb-4 grid grid-cols-4 gap-2 px-1 sm:gap-3 sm:px-2">
+          <nav className="mb-2 grid grid-cols-4 gap-2 px-1 sm:gap-3 sm:px-2">
             <button
               type="button"
               onClick={() => { setPage('teams'); setMessage('') }}
@@ -1432,7 +1432,7 @@ function App() {
         )}
 
         {message && (
-          <div role="status" className="mb-5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <div role="status" className={`rounded-xl bg-blue-50 px-3 text-sm text-blue-800 ${page === 'game-record' ? 'mb-1 py-1' : 'mb-2 py-2'}`}>
             {message}
           </div>
         )}
@@ -1566,7 +1566,7 @@ function App() {
             </section>
 
             <section>
-              <h2 className="mb-4 text-2xl font-bold">チーム一覧（{teams.length}）</h2>
+              <h2 className="mb-4 pl-3 text-2xl font-bold">チーム一覧（{teams.length}）</h2>
               {teams.length === 0 ? (
                 <p className="rounded-xl bg-white p-6 text-slate-500">まずはチームを作成してください。</p>
               ) : (
@@ -1712,7 +1712,7 @@ function App() {
             </section>
 
             <section>
-              <h2 className="mb-4 text-2xl font-bold">試合一覧（{games.length}）</h2>
+              <h2 className="mb-4 pl-3 text-2xl font-bold">試合一覧（{games.length}）</h2>
               {games.length === 0 ? (
                 <p className="rounded-xl bg-white p-6 text-slate-500">まだ試合がありません。上のフォームから作成してください。</p>
               ) : (
