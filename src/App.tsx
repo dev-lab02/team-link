@@ -1959,17 +1959,17 @@ function App() {
               <>
                 <div className="flex items-center justify-end gap-2 py-0.5">
                   {selectedGame.status === 'completed' ? (
-                    <span className="rounded-lg bg-slate-100 px-6 py-3 text-lg font-bold text-slate-700">試合終了</span>
+                    <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-700">試合終了</span>
                   ) : (
-                    <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-6 py-3 text-lg font-bold text-white disabled:opacity-50">試合終了</button>
+                    <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-bold text-white disabled:opacity-50">試合終了</button>
                   )}
-                  <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-6 py-3 text-lg font-bold">試合一覧に戻る</button>
+                  <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold">試合一覧に戻る</button>
                 </div>
                 <div className="mt-1 grid grid-cols-4 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
-                  <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
-                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
-                  <button type="button" onClick={() => setRecordView('box')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'box' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>ボックススコア</button>
-                  <button type="button" onClick={() => setRecordView('history')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'history' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>履歴一覧</button>
+                  <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
+                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
+                  <button type="button" onClick={() => setRecordView('box')} className={`rounded-lg px-1 py-2 text-xs font-bold sm:text-base ${recordView === 'box' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>ボックススコア</button>
+                  <button type="button" onClick={() => setRecordView('history')} className={`rounded-lg px-1 py-2 text-xs font-bold sm:text-base ${recordView === 'history' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>履歴一覧</button>
                 </div>
                 {recordView === 'official' && (
                   <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
