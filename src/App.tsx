@@ -26,7 +26,7 @@ const todayLocal = () => {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
-type RecordView = 'official' | 'original'
+type RecordView = 'official' | 'original' | 'box' | 'history'
 
 // 背番号は 1〜99 → 0 → 00 の順に並べる（選手IDや保存データは変更しない）
 const sortPlayersForSelection = <T extends { number: string | number }>(players: T[]): T[] => {
@@ -87,7 +87,7 @@ function App() {
     setStatsSheetWidth(element.clientWidth)
     return () => observer.disconnect()
   }, [page])
-  const statsSheetScale = Math.min(1.6, statsSheetWidth / 1000)
+  const statsSheetScale = Math.max(0.1, statsSheetWidth / 1000)
   useEffect(() => {
     if (!statsFullscreen) return
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -126,7 +126,6 @@ function App() {
   const [substitutionLineup, setSubstitutionLineup] = useState<string[]>([])
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
   const [recordView, setRecordView] = useState<RecordView>('official')
-  const [historyModalOpen, setHistoryModalOpen] = useState(false)
   const [historyFilters, setHistoryFilters] = useState<{ white: { quarter: string; playerId: string }; dark: { quarter: string; playerId: string } }>({ white: { quarter: 'all', playerId: 'all' }, dark: { quarter: 'all', playerId: 'all' } })
   const updateHistoryFilter = (uniform: 'white' | 'dark', field: 'quarter' | 'playerId', value: string) => {
     setHistoryFilters(previous => ({ ...previous, [uniform]: { ...previous[uniform], [field]: value } }))
@@ -1399,14 +1398,14 @@ function App() {
     )
   }
   return (
-    <main className={`min-h-screen bg-slate-100 py-8 text-slate-900 ${page === 'game-detail' ? 'px-1 sm:px-2' : 'px-4 sm:px-8'}`}>
-      <div className={`mx-auto ${page === 'game-detail' ? 'max-w-[1900px]' : 'max-w-5xl'}`}>
-        <header className="mb-3">
+    <main className={`min-h-screen bg-slate-100 text-slate-900 ${page === 'game-record' ? 'px-0 py-1 lg:h-dvh lg:overflow-hidden' : 'px-0 py-4 sm:py-6'}`}>
+      <div className="w-full">
+        <header className="mb-2 px-2 sm:px-3">
           <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
         </header>
 
         {page !== 'game-detail' && page !== 'game-record' && (
-          <nav className="mb-6 grid grid-cols-4 gap-2 sm:gap-3">
+          <nav className="mb-4 grid grid-cols-4 gap-2 px-1 sm:gap-3 sm:px-2">
             <button
               type="button"
               onClick={() => { setPage('teams'); setMessage('') }}
@@ -1950,7 +1949,7 @@ function App() {
         })()}
 
         {page === 'game-record' && (
-          <section className="rounded-2xl bg-white p-2 shadow-sm sm:p-3">
+          <section className="flex min-h-0 flex-col bg-white p-1 shadow-sm sm:p-2 lg:h-[calc(100dvh-42px)] lg:overflow-hidden">
             {!selectedGame || !homeTeam || !awayTeam ? (
               <div>
                 <h2 className="text-xl font-bold">試合を表示できません</h2>
@@ -1960,18 +1959,20 @@ function App() {
               <>
                 <div className="flex items-center justify-end gap-2 py-0.5">
                   {selectedGame.status === 'completed' ? (
-                    <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-700">試合終了</span>
+                    <span className="rounded-lg bg-slate-100 px-6 py-3 text-lg font-bold text-slate-700">試合終了</span>
                   ) : (
-                    <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-bold text-white disabled:opacity-50">試合終了</button>
+                    <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-6 py-3 text-lg font-bold text-white disabled:opacity-50">試合終了</button>
                   )}
-                  <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold">試合一覧に戻る</button>
+                  <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-6 py-3 text-lg font-bold">試合一覧に戻る</button>
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
-                  <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
-                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
+                <div className="mt-1 grid grid-cols-4 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                  <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
+                  <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
+                  <button type="button" onClick={() => setRecordView('box')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'box' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>ボックススコア</button>
+                  <button type="button" onClick={() => setRecordView('history')} className={`rounded-lg px-3 py-4 text-lg font-bold sm:text-xl ${recordView === 'history' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>履歴一覧</button>
                 </div>
                 {recordView === 'official' && (
-                  <>
+                  <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
                 <style>{`@keyframes teamlinkScoreFlash { 0% { transform:scale(1); background:transparent; color:white; } 25% { transform:scale(1.18); background:#16a34a; color:white; box-shadow:0 0 0 5px rgba(74,222,128,.45); } 70% { transform:scale(1.10); background:#16a34a; color:white; } 100% { transform:scale(1); background:transparent; color:white; } } .teamlink-score-flash { animation:teamlinkScoreFlash .8s ease-out both; }`}</style>
                 <div className="sticky top-0 z-20 mt-2 grid grid-cols-[auto_minmax(0,1fr)_minmax(65px,auto)_auto_minmax(65px,auto)_minmax(0,1fr)_auto] items-center gap-2 sm:gap-3 rounded-xl bg-slate-900 px-3 py-2.5 text-white shadow-md">
                   <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(homeTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>HOME</button>
@@ -2026,8 +2027,8 @@ function App() {
                           {recordFeedback.label}
                         </div>
                       )}
-                      <div className="mt-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1">
-                        {(() => { const event = [...selectedGame.events].reverse().find(e => !e.cancelled); if (!event) return <p className="text-sm font-bold text-slate-600">今の操作：記録なし</p>; const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam; const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId); const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}; const label = event.type === 'shot' ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}` : event.type === 'freeThrow' ? `フリースロー${event.made ? '成功' : '失敗'}` : labels[event.type] ?? event.type; return <p className="truncate text-sm font-black text-blue-900">今の操作：{eventTeam.name} · {eventPlayer ? `#${eventPlayer.number} ${eventPlayer.name}` : 'チーム記録'} · {label}</p> })()}
+                      <div className="mt-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                        {(() => { const event = [...selectedGame.events].reverse().find(e => !e.cancelled); if (!event) return <p className="text-lg font-bold text-slate-600">今の操作：記録なし</p>; const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam; const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId); const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}; const label = event.type === 'shot' ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}` : event.type === 'freeThrow' ? `フリースロー${event.made ? '成功' : '失敗'}` : labels[event.type] ?? event.type; return <p className="truncate text-lg font-black text-blue-900">今の操作：{eventTeam.name} · {eventPlayer ? `#${eventPlayer.number} ${eventPlayer.name}` : 'チーム記録'} · {label}</p> })()}
                       </div>
                       {freeThrowModalOpen && (
                         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="free-throw-title">
@@ -2061,31 +2062,17 @@ function App() {
                   <p className="text-sm text-slate-500">記録済み：{selectedGame.events.filter(e => !e.cancelled).length}件（自動保存）</p>
                   <button type="button" disabled={selectedGame.status === 'completed'} onClick={() => void handleUndoLastEvent()} className="rounded-lg border border-red-200 px-4 py-2 font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40">直前の記録を取り消す</button>
                 </div>
-                <div className="mt-2 rounded-lg border border-slate-200 p-2">
-                  <div className="mb-1 flex items-center justify-between gap-2"><h3 className="text-xs font-bold">直近3件</h3><button type="button" onClick={() => setHistoryModalOpen(true)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-800 active:bg-slate-100">履歴一覧・編集</button></div>
-                  {selectedGame.events.filter(e => !e.cancelled).slice().reverse().slice(0,3).map(event => {
-                    const eventTeam = event.teamId === homeTeam.id ? homeTeam : awayTeam
-                    const eventPlayer = [...homeTeam.players, ...awayTeam.players].find(p => p.id === event.playerId)
-                    const labels: Record<string,string> = {assist:'アシスト',block:'ブロック',steal:'スティール',offensiveRebound:'OFリバウンド',defensiveRebound:'DFリバウンド',turnover:'ターンオーバー',foul:'ファウル',substitution:'選手交代',timeout:'タイムアウト'}
-                    const recordLabel = event.type === 'shot'
-                      ? `${event.points ?? 0}点${event.made ? '成功' : '失敗'}`
-                      : event.type === 'freeThrow'
-                        ? `フリースロー${event.made ? '成功' : '失敗'}`
-                        : labels[event.type] ?? event.type
-                    return <div key={event.id} className="flex items-center justify-between gap-1 border-b border-slate-100 py-2 text-sm font-medium last:border-0"><span className="min-w-0 flex-1">{quarterLabel(event.quarter)} · {eventTeam.name} · #{eventPlayer?.number ?? '?'} {eventPlayer?.name ?? (event.type === 'timeout' ? 'チーム記録' : '選手不明')} <strong className="ml-1">{recordLabel}</strong></span></div>
-                  })}
-                  {selectedGame.events.filter(e => !e.cancelled).length === 0 && <p className="text-sm text-slate-500">まだ記録はありません。</p>}
-                </div>
-
-                {historyModalOpen && (
-                  <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-2 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="history-title">
-                    <div className="flex max-h-[94dvh] w-full max-w-[1450px] flex-col rounded-xl bg-white p-3 shadow-2xl sm:p-5">
+                  </div>
+                )}
+                {recordView === 'history' && (
+                  <div className="mt-2 flex min-h-0 flex-1 flex-col overflow-hidden" aria-labelledby="history-title">
+                    <div className="flex min-h-0 flex-1 flex-col rounded-xl bg-white p-2 sm:p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
                           <h3 id="history-title" className="text-xl font-black sm:text-2xl">履歴一覧</h3>
                           <p className="mt-1 text-sm text-slate-600 sm:text-base">白・濃チームそれぞれでクォーター・背番号を絞り込めます。記録を押すと編集できます。</p>
                         </div>
-                        <button type="button" onClick={() => setHistoryModalOpen(false)} className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-base font-bold active:bg-slate-100">閉じる</button>
+                        <button type="button" onClick={() => setRecordView('official')} className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-base font-bold active:bg-slate-100">入力に戻る</button>
                       </div>
                       <div className="grid min-h-0 flex-1 grid-cols-2 gap-2 sm:gap-4">
                         {(['white', 'dark'] as const).map(uniform => {
@@ -2149,6 +2136,7 @@ function App() {
                     </div>
                   </div>
                 )}
+                {recordView === 'box' && (<>
                 <section className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
                   <div className="mb-1">
                     <h3 className="text-sm font-bold">クォーター別スコア</h3>
@@ -2176,8 +2164,7 @@ function App() {
                 </section>
 
                 {renderBoxScore(selectedGame, homeTeam, awayTeam)}
-              </>
-                )}
+                </>)}
                 {recordView === 'original' && <>
                   <div className="my-2 flex justify-end"></div>
                   {renderOriginalSheet(selectedGame, homeTeam, awayTeam)}
