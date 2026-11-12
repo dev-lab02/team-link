@@ -1400,8 +1400,21 @@ function App() {
   return (
     <main className={`min-h-screen bg-slate-100 text-slate-900 ${page === 'game-record' ? 'px-0 py-0 lg:h-dvh lg:overflow-hidden' : 'px-0 py-1 sm:py-1'}`}>
       <div className="w-full">
-        <header className={`px-2 sm:px-3 ${page === 'game-record' ? 'mb-0' : 'mb-1'}`}>
-          <p className="text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
+        <header className={`px-2 sm:px-3 ${page === 'game-record' ? 'mb-0 flex min-h-[38px] items-center gap-3' : 'mb-1'}`}>
+          <p className="shrink-0 text-sm font-bold uppercase tracking-widest text-blue-700">TEAM LINK</p>
+          {page === 'game-record' && (
+            <>
+              {message && <p role="status" className="min-w-0 flex-1 truncate text-xs text-blue-800">{message}</p>}
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                {selectedGame?.status === 'completed' ? (
+                  <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-700">試合終了</span>
+                ) : (
+                  <button type="button" disabled={saving || !selectedGame} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-bold text-white disabled:opacity-50">試合終了</button>
+                )}
+                <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold">試合一覧に戻る</button>
+              </div>
+            </>
+          )}
         </header>
 
         {page !== 'game-detail' && page !== 'game-record' && (
@@ -1431,8 +1444,8 @@ function App() {
           </nav>
         )}
 
-        {message && (
-          <div role="status" className={`rounded-xl bg-blue-50 px-3 text-sm text-blue-800 ${page === 'game-record' ? 'mb-1 py-1' : 'mb-2 py-2'}`}>
+        {message && page !== 'game-record' && (
+          <div role="status" className="mb-2 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-800">
             {message}
           </div>
         )}
@@ -1949,7 +1962,7 @@ function App() {
         })()}
 
         {page === 'game-record' && (
-          <section className="flex min-h-0 flex-col bg-white p-1 shadow-sm sm:p-2 lg:h-[calc(100dvh-42px)] lg:overflow-hidden">
+          <section className="flex min-h-0 flex-col bg-white p-1 shadow-sm sm:p-2 lg:h-[calc(100dvh-38px)] lg:overflow-hidden">
             {!selectedGame || !homeTeam || !awayTeam ? (
               <div>
                 <h2 className="text-xl font-bold">試合を表示できません</h2>
@@ -1957,14 +1970,6 @@ function App() {
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-end gap-2 py-0.5">
-                  {selectedGame.status === 'completed' ? (
-                    <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-700">試合終了</span>
-                  ) : (
-                    <button type="button" disabled={saving} onClick={() => void handleFinishGame()} className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-bold text-white disabled:opacity-50">試合終了</button>
-                  )}
-                  <button type="button" onClick={() => { setPage('games'); setMessage('') }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold">試合一覧に戻る</button>
-                </div>
                 <div className="mt-1 grid grid-cols-4 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
                   <button type="button" onClick={() => setRecordView('official')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'official' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スタッツ入力</button>
                   <button type="button" onClick={() => setRecordView('original')} className={`rounded-lg px-2 py-2 text-sm font-bold sm:text-base ${recordView === 'original' ? 'bg-blue-700 text-white' : 'bg-white text-slate-700'}`}>スコア表示</button>
@@ -1974,17 +1979,16 @@ function App() {
                 {recordView === 'official' && (
                   <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
                 <style>{`@keyframes teamlinkScoreFlash { 0% { transform:scale(1); background:transparent; color:white; } 25% { transform:scale(1.18); background:#16a34a; color:white; box-shadow:0 0 0 5px rgba(74,222,128,.45); } 70% { transform:scale(1.10); background:#16a34a; color:white; } 100% { transform:scale(1); background:transparent; color:white; } } .teamlink-score-flash { animation:teamlinkScoreFlash .8s ease-out both; }`}</style>
-                <div className="sticky top-0 z-20 mt-2 grid grid-cols-[auto_minmax(0,1fr)_minmax(65px,auto)_auto_minmax(65px,auto)_minmax(0,1fr)_auto] items-center gap-2 sm:gap-3 rounded-xl bg-slate-900 px-3 py-2.5 text-white shadow-md">
-                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(homeTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>HOME</button>
+                <div className="sticky top-0 z-20 mt-1 grid grid-cols-[auto_minmax(0,1fr)_minmax(65px,auto)_auto_minmax(65px,auto)_minmax(0,1fr)_auto] items-center gap-2 sm:gap-3 rounded-xl bg-slate-900 px-3 py-1.5 text-white shadow-md">
+                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(homeTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-2 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>HOME</button>
                   <div className="min-w-0 text-center"><p className="truncate text-center text-base sm:text-lg font-extrabold text-slate-100">{homeTeam.name}</p><div className="mt-1 flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-xs sm:text-sm"><TeamFoulIndicator count={selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length} /><span className="whitespace-nowrap font-bold text-slate-200">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === homeTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
                   <p key={`home-score-${scoreFlash?.teamId === homeTeam.id ? scoreFlash.id : "normal"}`} className={`inline-block min-w-[65px] px-2 text-center text-4xl sm:text-5xl font-black tabular-nums rounded-md ${scoreFlash?.teamId === homeTeam.id ? 'teamlink-score-flash' : ''}`}>{selectedGame.events.filter(e => !e.cancelled && e.teamId === homeTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p>
-                  <div className="px-1 text-center"><p className="whitespace-nowrap text-base sm:text-lg font-black text-white">＜{quarterLabel(selectedGame.currentQuarter)}＞</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-1 whitespace-nowrap rounded-lg bg-white px-3 py-2 text-sm sm:text-base font-black text-slate-900 shadow-sm active:scale-95">次のQ⇒</button>}</div>
+                  <div className="px-1 text-center"><p className="whitespace-nowrap text-base sm:text-lg font-black text-white">＜{quarterLabel(selectedGame.currentQuarter)}＞</p>{selectedGame.status !== 'completed' && selectedGame.currentQuarter < 6 && <button type="button" onClick={() => void handleQuarterChange(selectedGame.currentQuarter + 1)} className="mt-0.5 whitespace-nowrap rounded-lg bg-white px-3 py-1 text-sm sm:text-base font-black text-slate-900 shadow-sm active:scale-95">次のQ⇒</button>}</div>
                   <p key={`away-score-${scoreFlash?.teamId === awayTeam.id ? scoreFlash.id : "normal"}`} className={`inline-block min-w-[65px] px-2 text-center text-4xl sm:text-5xl font-black tabular-nums rounded-md ${scoreFlash?.teamId === awayTeam.id ? 'teamlink-score-flash' : ''}`}>{selectedGame.events.filter(e => !e.cancelled && e.teamId === awayTeam.id && (e.type === 'shot' || e.type === 'freeThrow') && e.made).reduce((sum, e) => sum + (e.points ?? 0), 0)}</p>
                   <div className="min-w-0 text-center"><p className="truncate text-center text-base sm:text-lg font-extrabold text-slate-100">{awayTeam.name}</p><div className="mt-1 flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-xs sm:text-sm"><TeamFoulIndicator count={selectedGame.events.filter(e => !e.cancelled && e.type === 'foul' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length} /><span className="whitespace-nowrap font-bold text-slate-200">TO {selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length}/{timeoutLimit}</span></div></div>
-                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(awayTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-3 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>AWAY</button>
+                  <button type="button" disabled={selectedGame.status === 'completed' || selectedGame.events.filter(e => !e.cancelled && e.type === 'timeout' && e.teamId === awayTeam.id && e.quarter === selectedGame.currentQuarter).length >= timeoutLimit} onClick={() => void handleTimeout(awayTeam.id)} className="rounded-lg bg-indigo-600 px-2 py-2 text-xs font-black active:translate-y-0.5 active:bg-indigo-800 disabled:bg-slate-600">TO<br/>AWAY</button>
                 </div>
                 {selectedGame.status === 'completed' && <p className="mt-5 rounded-xl bg-slate-100 p-3 font-semibold text-slate-700">この試合は終了済みです。以下は保存された記録の閲覧専用です。</p>}
-                <p className="mt-2 text-xs font-bold">{selectedGame.status === 'completed' ? '選手・記録（閲覧のみ）' : '選手を選択して記録'}</p>
                 <div className="mt-1 grid grid-cols-1 items-start gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1fr)]">
                   {[{team:homeTeam, side:'home' as const, label:'ホーム'}, {team:awayTeam, side:'away' as const, label:'アウェイ'}].map(({team,side,label}) => {
                     const stored = (selectedGame as Game & { quarterLineups?: Record<number, { home: string[]; away: string[] }> }).quarterLineups ?? {}
