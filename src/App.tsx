@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import {
   createDefaultPlayers,
   deleteGame,
@@ -69,6 +69,24 @@ function App() {
       return []
     }
   })
+  // お気に入りチームの男女区分（既存のチーム・試合データは変更しない）
+  const [teamGenders, setTeamGenders] = useState<Record<string, 'boys' | 'girls'>>(() => {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem('team-link-team-genders') ?? '{}')
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+      return Object.fromEntries(Object.entries(value).filter(([, gender]) => gender === 'boys' || gender === 'girls')) as Record<string, 'boys' | 'girls'>
+    } catch { return {} }
+  })
+  const updateTeamGender = (teamId: string, gender: '' | 'boys' | 'girls') => {
+    setTeamGenders(current => {
+      const next = { ...current }
+      if (gender) next[teamId] = gender
+      else delete next[teamId]
+      try { localStorage.setItem('team-link-team-genders', JSON.stringify(next)) }
+      catch (error) { console.error('男女区分を保存できませんでした', error); setMessage('男女区分を保存できませんでした。') }
+      return next
+    })
+  }
   const [games, setGames] = useState<Game[]>([])
   const [statsGameIndex, setStatsGameIndex] = useState(-1)
   const [statsFullscreen, setStatsFullscreen] = useState(false)
@@ -346,6 +364,16 @@ function App() {
   const teamsForSelection = [...teams].sort((a, b) =>
     Number(favoriteTeamIdSet.has(b.id)) - Number(favoriteTeamIdSet.has(a.id)),
   )
+
+  // お気に入り登録チームの区分を試合一覧に反映する。
+  // 両チームに異なる区分が設定されている場合は誤分類を避ける。
+  function gameGender(game: Game): 'boys' | 'girls' | undefined {
+    const genders = [game.homeTeamId, game.awayTeamId]
+      .filter(id => favoriteTeamIdSet.has(id))
+      .map(id => teamGenders[id])
+      .filter((gender): gender is 'boys' | 'girls' => gender === 'boys' || gender === 'girls')
+    return genders.length > 0 && genders.every(gender => gender === genders[0]) ? genders[0] : undefined
+  }
 
   function teamLabel(teamId: string) {
     return teams.find((team) => team.id === teamId)?.name ?? '削除されたチーム'
@@ -1600,8 +1628,28 @@ function App() {
                               {favoriteTeamIdSet.has(team.id) ? '★' : '☆'}
                             </button>
                             <h3 className="text-xl font-bold">{team.name}</h3>
+                            {favoriteTeamIdSet.has(team.id) && teamGenders[team.id] && (
+                              <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${teamGenders[team.id] === 'boys' ? 'bg-sky-100 text-sky-800' : 'bg-pink-100 text-pink-800'}`}>
+                                {teamGenders[team.id] === 'boys' ? '男子' : '女子'}
+                              </span>
+                            )}
                           </div>
                           <p className="mt-1 text-sm text-slate-500">選手 {team.players.length} 名分</p>
+                          {favoriteTeamIdSet.has(team.id) && (
+                            <label className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                              男女区分
+                              <select
+                                aria-label={`${team.name}の男女区分`}
+                                value={teamGenders[team.id] ?? ''}
+                                onChange={event => updateTeamGender(team.id, event.target.value as '' | 'boys' | 'girls')}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5"
+                              >
+                                <option value="">未設定</option>
+                                <option value="boys">男子</option>
+                                <option value="girls">女子</option>
+                              </select>
+                            </label>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <button
@@ -1731,7 +1779,12 @@ function App() {
               ) : (
                 <div className="space-y-2">
                   {games.map((game) => (
-                    <article key={game.id} className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                    <article key={game.id} className={`rounded-2xl px-4 py-3 shadow-sm ${gameGender(game) === 'boys' ? 'bg-sky-100' : gameGender(game) === 'girls' ? 'bg-pink-100' : 'bg-white'}`}>
+                      {gameGender(game) && (
+                        <span className={`mb-1 inline-block rounded-full px-2 py-0.5 text-xs font-bold ${gameGender(game) === 'boys' ? 'bg-sky-200 text-sky-900' : 'bg-pink-200 text-pink-900'}`}>
+                          {gameGender(game) === 'boys' ? '男子' : '女子'}
+                        </span>
+                      )}
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 flex-1">
                           <h3 className="text-lg font-bold leading-snug text-slate-900">
